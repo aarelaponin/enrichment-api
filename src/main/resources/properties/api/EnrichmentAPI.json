@@ -1,0 +1,14 @@
+[
+    {
+        "title": "General",
+        "properties": [
+            {
+                "name": "label",
+                "label": "Label",
+                "type": "textfield",
+                "required": "true",
+                "value": "Enrichment API"
+            }
+        ]
+    }
+]

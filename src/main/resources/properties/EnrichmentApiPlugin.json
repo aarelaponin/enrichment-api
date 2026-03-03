@@ -1,0 +1,49 @@
+[
+    {
+        "title": "Configure Enrichment API",
+        "properties": [
+            {
+                "name": "tableName",
+                "label": "Form Table Name",
+                "type": "textfield",
+                "required": "True",
+                "value": "trxEnrichment",
+                "description": "Joget form table name (without app_fd_ prefix). Example: trxEnrichment"
+            },
+            {
+                "name": "defaultSort",
+                "label": "Default Sort Field",
+                "type": "textfield",
+                "value": "dateCreated",
+                "description": "Default sort field (form element ID). Use 'dateCreated' or 'dateModified' for metadata fields."
+            },
+            {
+                "name": "validationConfig",
+                "label": "Validation Config (JSON)",
+                "type": "textarea",
+                "value": "",
+                "description": "JSON configuration for confidence overrides and validation rules. Example: {\"confidenceOverrides\": [{\"triggerField\": \"internal_type\", \"setFields\": {\"type_confidence\": \"manual_override\"}, \"clearFields\": []}]}"
+            },
+            {
+                "name": "maxPageSize",
+                "label": "Max Page Size",
+                "type": "textfield",
+                "value": "200",
+                "description": "Maximum allowed page size for GET /records (1-1000). Default: 200."
+            },
+            {
+                "name": "enableBatchOperations",
+                "label": "Enable Batch Operations",
+                "type": "checkbox",
+                "value": "",
+                "description": "Enable split, merge, and confirm endpoints. Uncheck to disable these operations."
+            },
+            {
+                "name": "info",
+                "label": "About",
+                "type": "label",
+                "value": "Enrichment API provides form-agnostic REST endpoints. Configure the table name above. The plugin dynamically reads all form fields — no recompilation needed when form changes."
+            }
+        ]
+    }
+]
