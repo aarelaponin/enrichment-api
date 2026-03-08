@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This is the **enrichment-api** plugin — a Joget DX 8.1 API Builder plugin providing REST endpoints for the Manual Enrichment Workspace (F01.05). It reads/writes enrichment transaction records from `trx_enrichment` via Joget's `FormDataDao`. The plugin is packaged as an OSGi bundle (Apache Felix).
 
-The full specification is at `docs/enrichment-api-specification.md`.
+The full specification is at `docs/enrichment-api-specification.md`. The workspace integration guide (mapping workspace operations to API calls) is at `docs/workspace-api-integration.md`.
 
 ## Build & Deploy
 
@@ -16,13 +16,13 @@ mvn clean package    # produces target/enrichment-api-8.1.0-SNAPSHOT.jar
 
 Deploy by uploading the JAR via Joget Plugin Manager (Settings → Manage Plugins → Upload Plugin).
 
-No test framework is configured — this is a Joget plugin that runs inside Joget's OSGi container.
+Tests use JUnit 4 + Mockito + H2 in-memory database. Run with `mvn test`.
 
 ## Architecture
 
 - **Plugin class:** `EnrichmentApiPlugin` extends `ApiPluginAbstract`. All endpoints are methods annotated with `@Operation` on this single class. The API Builder framework discovers them via annotation scanning.
 - **Activator:** `Activator.java` is the OSGi `BundleActivator` that registers the plugin.
-- **Service layer:** `EnrichmentService` in `service/` — handles record CRUD, version-based optimistic locking, status transitions, split/merge. Custom exceptions: `RecordNotFoundException`, `VersionConflictException`, `TerminalStatusException`, `DeleteNotAllowedException`, `InvalidTransitionException`.
+- **Service layer:** `EnrichmentService` in `service/` — handles record CRUD (including create), version-based optimistic locking, status transitions, split/merge. Custom exceptions: `RecordNotFoundException`, `VersionConflictException`, `TerminalStatusException`, `DeleteNotAllowedException`, `InvalidTransitionException`.
 - **Data access:** All DB access uses Joget's `FormDataDao` Spring bean (obtained via `AppUtil.getApplicationContext().getBean("formDataDao")`). **No raw SQL or direct JDBC** — always use the Joget API. `JdbcHelper` in `service/` is available for edge cases.
 - **Field mapping:** Dynamic — `rowToMap()` iterates all `FormRow` properties. No hardcoded field map constant. JSON keys use form element IDs directly (snake_case), matching Joget native patterns.
 - **Validation config:** `ValidationConfig` reads confidence overrides and validation rules from plugin properties (API Builder UI).
@@ -45,19 +45,23 @@ These are hard-won lessons — read before adding or modifying endpoints:
 | Registered Path | Actual Behavior | Notes |
 |----------------|-----------------|-------|
 | `/health` | Health check | Works (GET/POST both) |
-| `/records` | List records OR inline save | `?save=<json>` triggers save via `handleInlineSave()` |
+| `/records` | List records OR dispatched operations | `?save=<json>` dispatches to 8 operation handlers |
 | `/records/{id}` | Get single record | **Broken** — returns Joget 400. Detail panel uses cached data instead. |
-| `/records/{id}` (PUT) | Update record | **Broken** — same path variable issue. Use `?save=` instead. |
-| `/records/{id}/status` | Status transition | **Broken** — collides with `{id}` pattern |
-| `/records/status` | Batch status transition | **Broken** — collides with `{id}` pattern |
-| `/records/{id}` (DELETE) | Delete record | **Broken** — same path variable issue |
 | `/summary` | Statement summary counts | Works |
 | `/reconciliation/{statementId}` | Reconciliation data | May have path variable issue |
-| `/records/confirm` | Confirm for posting | **Broken** — collides with `{id}` pattern |
-| `/records/{id}/split` | Split record | **Broken** — collides with `{id}` pattern |
-| `/records/merge` | Merge records | **Broken** — collides with `{id}` pattern |
 
-**Working pattern:** For any endpoint that needs to actually work, piggyback on `/records` or `/health` via extra `@Param` parameters. Example: `?save=<json>` on `/records`.
+**All write operations** go through `GET /records?save=<json>`. The dispatcher routes by JSON structure:
+
+| Dispatch Key | Operation |
+|---|---|
+| `{create:true, fields:{...}}` | Create new record |
+| `{split:true, id:"...", allocations:[...]}` | Split record (supports per-child field overrides) |
+| `{merge:true, sourceIds:"...", mergedFields:{...}}` | Merge records |
+| `{delete:true, id:"..."}` | Delete record |
+| `{statusTransition:true, id:"...", targetStatus:"..."}` | Single status transition |
+| `{confirm:true, recordIds:[...]}` | Confirm for posting |
+| `{targetStatus:"...", recordIds:[...]}` | Batch status transition |
+| `{id:"...", version:N, ...fields}` | Inline save (fallback) |
 
 ## Reference Codebases
 
@@ -69,7 +73,13 @@ When encountering a new architectural pattern, API usage question, or implementa
 
 ## Development Phases
 
-The plugin is being built incrementally. Phases 0–3 are complete: health, records listing, single record (broken path), inline save (via `?save=` workaround). See `../DEV-PLAN.md` for the full plan.
+The plugin is being built incrementally. See `../DEV-PLAN.md` for the full plan.
+
+- **Phases 0–3** (complete): Health, records listing, single record, inline save, status transitions, delete, summary, reconciliation, confirm, split, merge.
+- **Phase WS-2** (complete): Expanded EDITABLE_FIELDS (22→39) for workspace operations.
+- **Phase WS-3** (complete): Per-child field overrides in split (internal_type, description, transaction_date, loan fields, GL overrides).
+- **Phase WS-4** (complete): Create record endpoint via `{create:true, fields:{...}}` dispatch.
+- **Deferred**: Atomic pair/unpair endpoint, period lock guard, enhanced confirmation validation.
 
 ## Critical FormDataDao Conventions
 

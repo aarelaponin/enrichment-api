@@ -9,6 +9,7 @@ import org.joget.apps.form.dao.FormDataDao;
 import org.joget.apps.form.model.FormRow;
 import org.joget.apps.form.model.FormRowSet;
 import org.joget.commons.util.LogUtil;
+import org.joget.workflow.model.service.WorkflowUserManager;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
@@ -43,14 +44,36 @@ public class EnrichmentService {
 
     private static final StatusManager STATUS_MANAGER = new StatusManager();
 
+    private FormDataDao daoOverride;
+
     private static final Set<Status> DELETABLE_STATUSES =
             EnumSet.of(Status.NEW, Status.ERROR, Status.MANUAL_REVIEW);
 
-    private static final Set<Status> SPLITTABLE_STATUSES =
-            EnumSet.of(Status.ENRICHED, Status.ADJUSTED, Status.IN_REVIEW, Status.READY);
-
     private static final Set<Status> MERGEABLE_STATUSES =
             EnumSet.of(Status.ENRICHED, Status.ADJUSTED, Status.IN_REVIEW);
+
+    /** Fields that are editable in normal statuses (spec §4.3). */
+    private static final Set<String> EDITABLE_FIELDS = Set.of(
+            "transaction_date", "settlement_date", "debit_credit",
+            "original_amount", "fee_amount", "total_amount", "description",
+            "internal_type", "validated_currency", "fx_rate_to_eur",
+            "fx_rate_date", "fx_rate_source", "requires_eur_parallel",
+            "resolved_customer_id", "customer_code", "resolved_asset_id",
+            "asset_category", "counterparty_id", "counterparty_short_code",
+            "has_fee", "lineage_note", "processing_notes",
+            // Workspace operations fields (WS-2)
+            "matched_rule_id", "type_confidence",
+            "customer_display_name", "customer_match_method",
+            "base_amount_eur", "pair_id", "acc_post_id",
+            "base_fee_eur", "loan_id", "loan_direction",
+            "loan_resolution_method", "source_reference",
+            "gl_debit_override", "gl_credit_override", "gl_override_reason",
+            "fund_allocation_status", "period_locked"
+    );
+
+    /** Statuses where only processing_notes is editable. */
+    private static final Set<Status> RESTRICTED_EDIT_STATUSES =
+            EnumSet.of(Status.PROCESSING, Status.ERROR);
 
     // ── Existing methods ───────────────────────────────────────────────
 
@@ -83,14 +106,28 @@ public class EnrichmentService {
             throw new RecordNotFoundException(id);
         }
 
-        // 2. Terminal check
+        // 2. Status check and field editability enforcement (spec §4.3)
         String statusCode = row.getProperty("status");
         Status currentStatus = null;
+        boolean isTerminal = false;
+        boolean isRestricted = false;
+
         if (statusCode != null && !statusCode.isEmpty()) {
             currentStatus = Status.fromCode(statusCode);
-            if (currentStatus == Status.CONFIRMED || currentStatus == Status.SUPERSEDED) {
+            isTerminal = (currentStatus == Status.CONFIRMED || currentStatus == Status.SUPERSEDED);
+            isRestricted = RESTRICTED_EDIT_STATUSES.contains(currentStatus);
+        }
+
+        if (isTerminal || isRestricted) {
+            // Terminal (CONFIRMED/SUPERSEDED) and restricted (PROCESSING/ERROR):
+            // only processing_notes is editable
+            fieldsToUpdate.keySet().retainAll(Set.of("processing_notes"));
+            if (fieldsToUpdate.isEmpty()) {
                 throw new TerminalStatusException(id, currentStatus);
             }
+        } else {
+            // Normal statuses: filter to only EDITABLE_FIELDS (silently drop non-editable)
+            fieldsToUpdate.keySet().retainAll(EDITABLE_FIELDS);
         }
 
         // 3. Version check (optimistic locking)
@@ -113,13 +150,14 @@ public class EnrichmentService {
             }
         }
 
-        // 5. Confidence overrides
-        if (confidenceOverrides != null) {
+        // 5. Confidence overrides — skip for terminal/restricted statuses
+        if (confidenceOverrides != null && !isTerminal && !isRestricted) {
             applyConfidenceOverrides(row, changedFields, confidenceOverrides);
         }
 
-        // 6. Validate auto-status transition before saving
-        boolean needsAutoTransition = !changedFields.isEmpty()
+        // 6. Validate auto-status transition before saving — skip for terminal/restricted
+        boolean needsAutoTransition = !isTerminal && !isRestricted
+                && !changedFields.isEmpty()
                 && currentStatus == Status.ENRICHED;
         if (needsAutoTransition) {
             if (!STATUS_MANAGER.canTransition(EntityType.ENRICHMENT,
@@ -135,7 +173,7 @@ public class EnrichmentService {
         rowSet.add(row);
         dao.saveOrUpdate(null, tableName, rowSet);
 
-        // 8. Auto-status transition via StatusManager
+        // 8. Auto-status transition via StatusManager — skip for terminal/restricted
         if (needsAutoTransition) {
             STATUS_MANAGER.transition(dao, tableName, EntityType.ENRICHMENT, id,
                     Status.ADJUSTED, "enrichment-api",
@@ -498,21 +536,20 @@ public class EnrichmentService {
             conn.setAutoCommit(false);
 
             String now = Instant.now().toString();
+            String user = getCurrentUser();
 
             for (String recordId : validIds) {
-                // Update status + confirmation fields
-                Map<String, String> updates = new HashMap<>();
-                updates.put("status", Status.CONFIRMED.getCode());
-                if (confConfig != null) {
-                    updates.put(confConfig.getConfirmedByField(), "enrichment-api");
-                    updates.put(confConfig.getConfirmedAtField(), now);
-                }
-                JdbcHelper.updateColumns(conn, tableName, recordId, updates);
+                // Validate and write status transition (READY → CONFIRMED)
+                transitionJdbc(conn, tableName, recordId,
+                        Status.READY, Status.CONFIRMED, user, "Confirmed for posting");
 
-                // Audit
-                JdbcHelper.insertAudit(conn, "ENRICHMENT", recordId,
-                        Status.READY.getCode(), Status.CONFIRMED.getCode(),
-                        "enrichment-api", "Confirmed for posting");
+                // Set confirmation metadata fields
+                if (confConfig != null) {
+                    Map<String, String> confUpdates = new HashMap<>();
+                    confUpdates.put(confConfig.getConfirmedByField(), user);
+                    confUpdates.put(confConfig.getConfirmedAtField(), now);
+                    JdbcHelper.updateColumns(conn, tableName, recordId, confUpdates, user);
+                }
 
                 Map<String, Object> item = new HashMap<>();
                 item.put("id", recordId);
@@ -571,13 +608,14 @@ public class EnrichmentService {
                 throw new RecordNotFoundException(id);
             }
 
-            // Validate status
+            // Validate status — must be able to transition to SUPERSEDED
             String statusCode = parent.get("status");
+            Status parentStatus = null;
             if (statusCode != null) {
-                Status status = Status.fromCode(statusCode);
-                if (!SPLITTABLE_STATUSES.contains(status)) {
+                parentStatus = Status.fromCode(statusCode);
+                if (!StatusManager.canTransition(EntityType.ENRICHMENT, parentStatus, Status.SUPERSEDED)) {
                     throw new IllegalArgumentException(
-                            "Record status '" + statusCode + "' does not allow split. Allowed: enriched, adjusted, in_review, ready");
+                            "Record status '" + statusCode + "' does not allow split");
                 }
             }
 
@@ -619,8 +657,10 @@ public class EnrichmentService {
             // 3. Transaction
             conn.setAutoCommit(false);
 
+            String user = getCurrentUser();
             String fxRateStr = parent.get(sm.getFxRateField());
             BigDecimal fxRate = parseBigDecimal(fxRateStr);
+            String groupId = UUID.randomUUID().toString();
 
             List<Map<String, Object>> children = new ArrayList<>();
 
@@ -651,10 +691,23 @@ public class EnrichmentService {
                 childFields.put(sm.getEurAmountField(), eurAmount.toPlainString());
                 childFields.put(sm.getCustomerField(), alloc.get(sm.getCustomerField()));
 
+                // Per-child field overrides: apply any additional allocation keys
+                // that are in EDITABLE_FIELDS but not already handled above
+                for (Map.Entry<String, String> entry : alloc.entrySet()) {
+                    String key = entry.getKey();
+                    if (key.equals(sm.getAmountField()) || key.equals(sm.getFeeField())
+                            || key.equals(sm.getCustomerField())) {
+                        continue; // already handled
+                    }
+                    if (EDITABLE_FIELDS.contains(key)) {
+                        childFields.put(key, entry.getValue());
+                    }
+                }
+
                 // Lineage
                 childFields.put(sm.getOriginField(), "split");
                 childFields.put(sm.getParentIdField(), id);
-                childFields.put(sm.getGroupIdField(), id);
+                childFields.put(sm.getGroupIdField(), groupId);
                 childFields.put(sm.getSequenceField(), String.valueOf(seq + 1));
                 childFields.put(sm.getLineageNoteField(),
                         "Split from " + id + ": allocation to " + alloc.get(sm.getCustomerField()));
@@ -665,12 +718,12 @@ public class EnrichmentService {
                 // Reset version
                 childFields.put("version", "0");
 
-                JdbcHelper.insertRow(conn, tableName, childId, childFields);
+                JdbcHelper.insertRow(conn, tableName, childId, childFields, user);
 
-                // Audit for child
-                JdbcHelper.insertAudit(conn, "ENRICHMENT", childId,
+                // Audit for child (new record, not a transition)
+                JdbcHelper.insertAudit(conn, EntityType.ENRICHMENT, childId,
                         "null", Status.ENRICHED.getCode(),
-                        "enrichment-api", "Split child from " + id);
+                        user, "Split child from " + id);
 
                 Map<String, Object> childInfo = new LinkedHashMap<>();
                 childInfo.put("id", childId);
@@ -680,14 +733,9 @@ public class EnrichmentService {
                 children.add(childInfo);
             }
 
-            // Supersede parent
-            Map<String, String> parentUpdate = new HashMap<>();
-            parentUpdate.put(sm.getStatusField(), Status.SUPERSEDED.getCode());
-            JdbcHelper.updateColumns(conn, tableName, id, parentUpdate);
-
-            JdbcHelper.insertAudit(conn, "ENRICHMENT", id,
-                    statusCode, Status.SUPERSEDED.getCode(),
-                    "enrichment-api", "Split into " + allocations.size() + " children");
+            // Supersede parent — validated against state machine
+            transitionJdbc(conn, tableName, id, parentStatus, Status.SUPERSEDED,
+                    user, "Split into " + allocations.size() + " children");
 
             conn.commit();
 
@@ -864,6 +912,7 @@ public class EnrichmentService {
             // 6. Transaction
             conn.setAutoCommit(false);
 
+            String user = getCurrentUser();
             String mergedId = UUID.randomUUID().toString();
             String groupId = UUID.randomUUID().toString();
 
@@ -874,26 +923,26 @@ public class EnrichmentService {
             baseFields.put(sm.getStatusField(), Status.ENRICHED.getCode());
             baseFields.put("version", "0");
 
-            JdbcHelper.insertRow(conn, tableName, mergedId, baseFields);
+            JdbcHelper.insertRow(conn, tableName, mergedId, baseFields, user);
 
-            // Audit for merged record
-            JdbcHelper.insertAudit(conn, "ENRICHMENT", mergedId,
+            // Audit for merged record (new record, not a transition)
+            JdbcHelper.insertAudit(conn, EntityType.ENRICHMENT, mergedId,
                     "null", Status.ENRICHED.getCode(),
-                    "enrichment-api", "Merged from " + String.join(", ", sourceIds));
+                    user, "Merged from " + String.join(", ", sourceIds));
 
             // Supersede sources
             for (int i = 0; i < sourceIds.size(); i++) {
                 String srcId = sourceIds.get(i);
-                String srcStatus = sources.get(i).get("status");
+                Status srcStatus = Status.fromCode(sources.get(i).get("status"));
 
-                Map<String, String> srcUpdate = new HashMap<>();
-                srcUpdate.put(sm.getStatusField(), Status.SUPERSEDED.getCode());
-                srcUpdate.put(sm.getGroupIdField(), groupId);
-                JdbcHelper.updateColumns(conn, tableName, srcId, srcUpdate);
+                // Validate and write status transition via state machine
+                transitionJdbc(conn, tableName, srcId, srcStatus, Status.SUPERSEDED,
+                        user, "Merged into " + mergedId);
 
-                JdbcHelper.insertAudit(conn, "ENRICHMENT", srcId,
-                        srcStatus != null ? srcStatus : "null", Status.SUPERSEDED.getCode(),
-                        "enrichment-api", "Merged into " + mergedId);
+                // Also update group_id on source
+                Map<String, String> grpUpdate = new HashMap<>();
+                grpUpdate.put(sm.getGroupIdField(), groupId);
+                JdbcHelper.updateColumns(conn, tableName, srcId, grpUpdate, user);
             }
 
             conn.commit();
@@ -917,6 +966,90 @@ public class EnrichmentService {
             if (conn != null) {
                 try { conn.setAutoCommit(true); } catch (SQLException ignored) {}
             }
+            JdbcHelper.closeQuietly(conn);
+        }
+    }
+
+    // ── Create record ─────────────────────────────────────────────────
+
+    /** Mandatory fields for record creation. */
+    private static final Set<String> CREATE_REQUIRED_FIELDS = Set.of(
+            "internal_type", "debit_credit", "total_amount",
+            "validated_currency", "transaction_date", "statement_id"
+    );
+
+    /** Fields that must not be set by the caller on create. */
+    private static final Set<String> CREATE_PROTECTED_FIELDS = Set.of(
+            "id", "status", "version", "origin", "parent_enrichment_id",
+            "group_id", "split_sequence", "confirmed_by", "confirmed_at"
+    );
+
+    /**
+     * Creates a new enrichment record via JDBC.
+     *
+     * @param tableName the form table name
+     * @param fields    field values (form element IDs, no c_ prefix)
+     * @return result map with created record id and fields
+     * @throws IllegalArgumentException if mandatory fields are missing
+     * @throws SQLException on database error
+     */
+    public Map<String, Object> createRecord(String tableName, Map<String, String> fields)
+            throws SQLException {
+
+        // 1. Validate mandatory fields
+        List<String> missing = new ArrayList<>();
+        for (String req : CREATE_REQUIRED_FIELDS) {
+            String val = fields.get(req);
+            if (val == null || val.isEmpty()) {
+                missing.add(req);
+            }
+        }
+        if (!missing.isEmpty()) {
+            throw new IllegalArgumentException(
+                    "Missing required fields for create: " + String.join(", ", missing));
+        }
+
+        // 2. Strip protected fields — caller cannot set these
+        for (String prot : CREATE_PROTECTED_FIELDS) {
+            fields.remove(prot);
+        }
+
+        // 3. Filter to editable fields only (plus fields we set ourselves)
+        fields.keySet().retainAll(EDITABLE_FIELDS);
+
+        // 4. Set system fields
+        fields.put("source_tp", "manual");
+        fields.put("status", Status.ENRICHED.getCode());
+        fields.put("version", "0");
+
+        String id = UUID.randomUUID().toString();
+        String user = getCurrentUser();
+
+        Connection conn = null;
+        try {
+            conn = JdbcHelper.getConnection();
+
+            JdbcHelper.insertRow(conn, tableName, id, fields, user);
+
+            // Audit
+            JdbcHelper.insertAudit(conn, EntityType.ENRICHMENT, id,
+                    "null", Status.ENRICHED.getCode(),
+                    user, "Created via API (manual)");
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            // Echo back stored fields first
+            for (Map.Entry<String, String> entry : fields.entrySet()) {
+                result.put(entry.getKey(), entry.getValue());
+            }
+            // Then set typed system fields (overwrite string versions)
+            result.put("id", id);
+            result.put("status", Status.ENRICHED.getCode());
+            result.put("version", 0);
+            return result;
+
+        } catch (Exception e) {
+            throw new SQLException("Create record failed: " + e.getMessage(), e);
+        } finally {
             JdbcHelper.closeQuietly(conn);
         }
     }
@@ -1038,7 +1171,48 @@ public class EnrichmentService {
         return result;
     }
 
+    void setDao(FormDataDao dao) {
+        this.daoOverride = dao;
+    }
+
     private FormDataDao getDao() {
+        if (daoOverride != null) return daoOverride;
         return (FormDataDao) AppUtil.getApplicationContext().getBean("formDataDao");
+    }
+
+    /**
+     * Gets the current logged-in user from Joget's WorkflowUserManager.
+     * Falls back to "enrichment-api" if unavailable (e.g., in tests or background jobs).
+     */
+    private String getCurrentUser() {
+        try {
+            WorkflowUserManager wum = (WorkflowUserManager)
+                    AppUtil.getApplicationContext().getBean("workflowUserManager");
+            String username = wum.getCurrentUsername();
+            if (username != null && !username.isEmpty()) return username;
+        } catch (Exception ignored) {}
+        return "enrichment-api";
+    }
+
+    /**
+     * Validates a transition via StatusManager.canTransition() then writes
+     * the status change and audit entry via JDBC — all on the same connection.
+     */
+    private void transitionJdbc(Connection conn, String tableName, String recordId,
+                                Status fromStatus, Status toStatus,
+                                String triggeredBy, String reason)
+            throws SQLException, InvalidTransitionException {
+        if (!StatusManager.canTransition(EntityType.ENRICHMENT, fromStatus, toStatus)) {
+            throw new InvalidTransitionException(EntityType.ENRICHMENT, recordId,
+                    fromStatus, toStatus);
+        }
+
+        Map<String, String> updates = new HashMap<>();
+        updates.put("status", toStatus.getCode());
+        JdbcHelper.updateColumns(conn, tableName, recordId, updates, triggeredBy);
+
+        JdbcHelper.insertAudit(conn, EntityType.ENRICHMENT, recordId,
+                fromStatus != null ? fromStatus.getCode() : "null",
+                toStatus.getCode(), triggeredBy, reason);
     }
 }

@@ -28,24 +28,21 @@
     {
       "className": "org.joget.apps.form.model.Section",
       "properties": {
-        "id": "section_identity",
-        "label": "Identity"
+        "id": "section_provenance",
+        "label": "Provenance"
       },
       "elements": [
         {
           "className": "org.joget.apps.form.model.Column",
           "properties": {
-            "width": "100%"
+            "width": "50%"
           },
           "elements": [
             {
               "className": "org.joget.apps.form.lib.SelectBox",
               "properties": {
-                "readonly": "",
-                "multiple": "",
-                "label": "Source Type",
-                "readonlyLabel": "",
                 "id": "source_tp",
+                "label": "Source Type",
                 "options": [
                   {
                     "value": "bank",
@@ -56,11 +53,361 @@
                     "value": "secu",
                     "label": "Securities",
                     "grouping": ""
+                  },
+                  {
+                    "value": "manual",
+                    "label": "Manual",
+                    "grouping": ""
                   }
                 ],
                 "optionsBinder": {
                   "className": "",
                   "properties": {}
+                },
+                "value": "",
+                "multiple": "",
+                "validator": {
+                  "className": "org.joget.apps.form.lib.DefaultValidator",
+                  "properties": {
+                    "mandatory": "true"
+                  }
+                },
+                "readonly": "",
+                "readonlyLabel": "",
+                "controlField": "",
+                "size": "",
+                "workflowVariable": ""
+              }
+            },
+            {
+              "className": "org.joget.apps.form.lib.TextField",
+              "properties": {
+                "id": "statement_id",
+                "label": "Statement ID",
+                "readonly": "true",
+                "readonlyLabel": "",
+                "maxlength": "50",
+                "value": "",
+                "workflowVariable": ""
+              }
+            },
+            {
+              "className": "org.joget.apps.form.lib.DatePicker",
+              "properties": {
+                "id": "statement_date",
+                "label": "Statement Date",
+                "dataFormat": "yyyy-MM-dd",
+                "yearRange": "c-10:c+10",
+                "readonly": "true",
+                "allowManual": "",
+                "datePickerType": "",
+                "currentDateAs": "",
+                "disableWeekends": "",
+                "readonlyLabel": "",
+                "value": "",
+                "validator": {
+                  "className": "",
+                  "properties": {}
+                },
+                "startDateFieldId": "",
+                "endDateFieldId": "",
+                "placeholder": "",
+                "format": "",
+                "workflowVariable": ""
+              }
+            },
+            {
+              "className": "org.joget.apps.form.lib.HiddenField",
+              "properties": {
+                "id": "acc_post_id",
+                "value": ""
+              }
+            }
+          ]
+        },
+        {
+          "className": "org.joget.apps.form.model.Column",
+          "properties": {
+            "width": "50%"
+          },
+          "elements": [
+            {
+              "className": "org.joget.apps.form.lib.TextField",
+              "properties": {
+                "id": "source_trx_id",
+                "label": "Source Trx ID",
+                "readonly": "true",
+                "readonlyLabel": "",
+                "maxlength": "50",
+                "value": "",
+                "workflowVariable": ""
+              }
+            },
+            {
+              "className": "org.joget.apps.form.lib.SelectBox",
+              "properties": {
+                "id": "origin",
+                "label": "Origin",
+                "value": "pipeline",
+                "options": [
+                  {
+                    "value": "pipeline",
+                    "label": "Pipeline",
+                    "grouping": ""
+                  },
+                  {
+                    "value": "split",
+                    "label": "Split",
+                    "grouping": ""
+                  },
+                  {
+                    "value": "merge",
+                    "label": "Merge",
+                    "grouping": ""
+                  },
+                  {
+                    "value": "manual",
+                    "label": "Manual",
+                    "grouping": ""
+                  }
+                ],
+                "optionsBinder": {
+                  "className": "",
+                  "properties": {}
+                },
+                "multiple": "",
+                "validator": {
+                  "className": "",
+                  "properties": {}
+                },
+                "readonly": "",
+                "readonlyLabel": "",
+                "controlField": "",
+                "size": "",
+                "workflowVariable": ""
+              }
+            },
+            {
+              "className": "org.joget.apps.form.lib.TextField",
+              "properties": {
+                "id": "lineage_note",
+                "label": "Lineage Note",
+                "maxlength": "500"
+              }
+            },
+            {
+              "className": "org.joget.apps.form.lib.HiddenField",
+              "properties": {
+                "id": "parent_enrichment_id",
+                "value": ""
+              }
+            },
+            {
+              "className": "org.joget.apps.form.lib.HiddenField",
+              "properties": {
+                "id": "group_id",
+                "value": ""
+              }
+            },
+            {
+              "className": "org.joget.apps.form.lib.HiddenField",
+              "properties": {
+                "id": "split_sequence",
+                "value": ""
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "className": "org.joget.apps.form.model.Section",
+      "properties": {
+        "id": "section_transaction_core",
+        "label": "Transaction Core"
+      },
+      "elements": [
+        {
+          "className": "org.joget.apps.form.model.Column",
+          "properties": {
+            "width": "50%"
+          },
+          "elements": [
+            {
+              "className": "org.joget.apps.form.lib.DatePicker",
+              "properties": {
+                "id": "transaction_date",
+                "label": "Transaction Date",
+                "dataFormat": "yyyy-MM-dd",
+                "yearRange": "c-10:c+10",
+                "readonly": "",
+                "allowManual": "",
+                "datePickerType": "",
+                "currentDateAs": "",
+                "disableWeekends": "",
+                "readonlyLabel": "",
+                "value": "",
+                "validator": {
+                  "className": "",
+                  "properties": {}
+                },
+                "startDateFieldId": "",
+                "endDateFieldId": "",
+                "placeholder": "",
+                "format": "",
+                "workflowVariable": ""
+              }
+            },
+            {
+              "className": "org.joget.apps.form.lib.DatePicker",
+              "properties": {
+                "id": "settlement_date",
+                "label": "Settlement Date",
+                "dataFormat": "yyyy-MM-dd",
+                "yearRange": "c-10:c+10",
+                "readonly": "",
+                "allowManual": "",
+                "datePickerType": "",
+                "currentDateAs": "",
+                "disableWeekends": "",
+                "readonlyLabel": "",
+                "value": "",
+                "validator": {
+                  "className": "",
+                  "properties": {}
+                },
+                "startDateFieldId": "",
+                "endDateFieldId": "",
+                "placeholder": "",
+                "format": "",
+                "workflowVariable": ""
+              }
+            },
+            {
+              "className": "org.joget.apps.form.lib.SelectBox",
+              "properties": {
+                "id": "debit_credit",
+                "label": "D/C",
+                "options": [
+                  {
+                    "value": "D",
+                    "label": "Debit",
+                    "grouping": ""
+                  },
+                  {
+                    "value": "C",
+                    "label": "Credit",
+                    "grouping": ""
+                  }
+                ],
+                "optionsBinder": {
+                  "className": "",
+                  "properties": {}
+                },
+                "value": "",
+                "multiple": "",
+                "validator": {
+                  "className": "org.joget.apps.form.lib.DefaultValidator",
+                  "properties": {
+                    "mandatory": "true"
+                  }
+                },
+                "readonly": "",
+                "readonlyLabel": "",
+                "controlField": "",
+                "size": "",
+                "workflowVariable": ""
+              }
+            },
+            {
+              "className": "org.joget.apps.form.lib.TextArea",
+              "properties": {
+                "id": "description",
+                "label": "Description",
+                "rows": "3"
+              }
+            }
+          ]
+        },
+        {
+          "className": "org.joget.apps.form.model.Column",
+          "properties": {
+            "width": "50%"
+          },
+          "elements": [
+            {
+              "className": "org.joget.apps.form.lib.TextField",
+              "properties": {
+                "id": "original_amount",
+                "label": "Original Amount",
+                "maxlength": "20",
+                "storeNumeric": "true",
+                "validator": {
+                  "className": "org.joget.apps.form.lib.DefaultValidator",
+                  "properties": {
+                    "type": "numeric",
+                    "message": "",
+                    "mandatory": ""
+                  }
+                }
+              }
+            },
+            {
+              "className": "org.joget.apps.form.lib.TextField",
+              "properties": {
+                "id": "fee_amount",
+                "label": "Fee Amount",
+                "maxlength": "20",
+                "storeNumeric": "true",
+                "validator": {
+                  "className": "org.joget.apps.form.lib.DefaultValidator",
+                  "properties": {
+                    "type": "numeric",
+                    "message": "",
+                    "mandatory": ""
+                  }
+                }
+              }
+            },
+            {
+              "className": "org.joget.apps.form.lib.TextField",
+              "properties": {
+                "id": "total_amount",
+                "label": "Total Amount",
+                "maxlength": "20",
+                "storeNumeric": "true",
+                "validator": {
+                  "className": "org.joget.apps.form.lib.DefaultValidator",
+                  "properties": {
+                    "type": "numeric",
+                    "message": "",
+                    "mandatory": ""
+                  }
+                }
+              }
+            },
+            {
+              "className": "org.joget.apps.form.lib.SelectBox",
+              "properties": {
+                "readonly": "",
+                "multiple": "",
+                "label": "Original Currency",
+                "readonlyLabel": "",
+                "id": "original_currency",
+                "options": [],
+                "optionsBinder": {
+                  "className": "org.joget.apps.form.lib.FormOptionsBinder",
+                  "properties": {
+                    "formDefId": "currency",
+                    "idColumn": "code",
+                    "labelColumn": "name",
+                    "groupingColumn": "",
+                    "extraCondition": "",
+                    "addEmptyOption": "true",
+                    "emptyLabel": "",
+                    "useAjax": "",
+                    "cacheInterval": ""
+                  }
                 },
                 "value": "",
                 "validator": {
@@ -71,40 +418,6 @@
                 "size": "",
                 "workflowVariable": ""
               }
-            },
-            {
-              "className": "org.joget.apps.form.lib.TextField",
-              "properties": {
-                "id": "source_trx_id",
-                "label": "Source Transaction ID",
-                "maxlength": "50",
-                "validator": {
-                  "className": "org.joget.apps.form.lib.DefaultValidator",
-                  "properties": {
-                    "mandatory": "true"
-                  }
-                }
-              }
-            },
-            {
-              "className": "org.joget.apps.form.lib.TextField",
-              "properties": {
-                "id": "statement_id",
-                "label": "Statement ID",
-                "maxlength": "50",
-                "validator": {
-                  "className": "org.joget.apps.form.lib.DefaultValidator",
-                  "properties": {
-                    "mandatory": "true"
-                  }
-                }
-              }
-            },
-            {
-              "className": "org.joget.apps.form.lib.HiddenField",
-              "properties": {
-                "id": "acc_post_id"
-              }
             }
           ]
         }
@@ -113,14 +426,14 @@
     {
       "className": "org.joget.apps.form.model.Section",
       "properties": {
-        "id": "section_type",
-        "label": "Type Assignment"
+        "id": "section_classification",
+        "label": "Classification"
       },
       "elements": [
         {
           "className": "org.joget.apps.form.model.Column",
           "properties": {
-            "width": "100%"
+            "width": "50%"
           },
           "elements": [
             {
@@ -149,19 +462,70 @@
                   "className": "",
                   "properties": {}
                 },
-                "controlField": "",
-                "size": "",
                 "readonly": "",
                 "readonlyLabel": "",
+                "controlField": "",
+                "size": "",
+                "workflowVariable": ""
+              }
+            }
+          ]
+        },
+        {
+          "className": "org.joget.apps.form.model.Column",
+          "properties": {
+            "width": "50%"
+          },
+          "elements": [
+            {
+              "className": "org.joget.apps.form.lib.SelectBox",
+              "properties": {
+                "id": "type_confidence",
+                "label": "Type Confidence",
+                "options": [
+                  {
+                    "value": "rule_match",
+                    "label": "Rule Match",
+                    "grouping": ""
+                  },
+                  {
+                    "value": "tentative",
+                    "label": "Tentative",
+                    "grouping": ""
+                  },
+                  {
+                    "value": "unclassified",
+                    "label": "Unclassified",
+                    "grouping": ""
+                  },
+                  {
+                    "value": "manual_override",
+                    "label": "Manual Override",
+                    "grouping": ""
+                  }
+                ],
+                "optionsBinder": {
+                  "className": "",
+                  "properties": {}
+                },
+                "value": "",
+                "multiple": "",
+                "validator": {
+                  "className": "",
+                  "properties": {}
+                },
+                "readonly": "",
+                "readonlyLabel": "",
+                "controlField": "",
+                "size": "",
                 "workflowVariable": ""
               }
             },
             {
-              "className": "org.joget.apps.form.lib.TextField",
+              "className": "org.joget.apps.form.lib.HiddenField",
               "properties": {
                 "id": "matched_rule_id",
-                "label": "Matched Rule ID",
-                "maxlength": "50"
+                "value": ""
               }
             }
           ]
@@ -171,151 +535,64 @@
     {
       "className": "org.joget.apps.form.model.Section",
       "properties": {
-        "id": "section_fx",
-        "label": "Currency / FX"
+        "id": "section_customer_resolution",
+        "label": "Customer Resolution"
       },
       "elements": [
         {
           "className": "org.joget.apps.form.model.Column",
           "properties": {
-            "width": "100%"
+            "width": "50%"
           },
           "elements": [
             {
               "className": "org.joget.apps.form.lib.SelectBox",
               "properties": {
-                "readonly": "",
-                "multiple": "",
-                "label": "Validated Currency",
-                "readonlyLabel": "",
-                "id": "validated_currency",
+                "id": "resolved_customer_id",
+                "label": "Customer",
                 "options": [],
                 "optionsBinder": {
                   "className": "org.joget.apps.form.lib.FormOptionsBinder",
                   "properties": {
-                    "formDefId": "currency",
-                    "idColumn": "code",
-                    "labelColumn": "name",
+                    "formDefId": "customerForm",
+                    "idColumn": "customerId",
+                    "labelColumn": "customerLastName",
                     "groupingColumn": "",
                     "extraCondition": "",
                     "addEmptyOption": "true",
-                    "emptyLabel": "",
-                    "useAjax": "",
+                    "emptyLabel": "Select Customer",
+                    "useAjax": "true",
                     "cacheInterval": ""
                   }
                 },
                 "value": "",
+                "multiple": "",
                 "validator": {
                   "className": "",
                   "properties": {}
                 },
+                "readonly": "",
+                "readonlyLabel": "",
                 "controlField": "",
+                "controlValue": "",
                 "size": "",
                 "workflowVariable": ""
               }
             },
             {
-              "className": "org.joget.apps.form.lib.TextField",
-              "properties": {
-                "id": "fx_rate_to_eur",
-                "label": "FX Rate to EUR",
-                "maxlength": "20"
-              }
-            },
-            {
-              "className": "org.joget.apps.form.lib.DatePicker",
-              "properties": {
-                "readonly": "",
-                "allowManual": "",
-                "yearRange": "c-10:c+10",
-                "dataFormat": "yyyy-MM-dd",
-                "label": "FX Rate Date",
-                "datePickerType": "",
-                "currentDateAs": "",
-                "disableWeekends": "",
-                "readonlyLabel": "",
-                "id": "fx_rate_date",
-                "value": "",
-                "validator": {
-                  "className": "",
-                  "properties": {}
-                },
-                "startDateFieldId": "",
-                "endDateFieldId": "",
-                "placeholder": "",
-                "format": "",
-                "workflowVariable": ""
-              }
-            },
-            {
-              "className": "org.joget.apps.form.lib.TextField",
-              "properties": {
-                "id": "fx_rate_source",
-                "label": "FX Rate Source",
-                "maxlength": "20"
-              }
-            },
-            {
-              "className": "org.joget.apps.form.lib.TextField",
-              "properties": {
-                "id": "base_amount_eur",
-                "label": "Base Amount EUR",
-                "maxlength": "20"
-              }
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "className": "org.joget.apps.form.model.Section",
-      "properties": {
-        "id": "section_customer",
-        "label": "Customer"
-      },
-      "elements": [
-        {
-          "className": "org.joget.apps.form.model.Column",
-          "properties": {
-            "width": "100%"
-          },
-          "elements": [
-            {
-              "className": "org.joget.apps.form.lib.TextField",
-              "properties": {
-                "id": "resolved_customer_id",
-                "label": "Resolved Customer ID",
-                "maxlength": "50"
-              }
-            },
-            {
-              "className": "org.joget.apps.form.lib.TextField",
-              "properties": {
-                "id": "customer_code",
-                "label": "Customer Code",
-                "maxlength": "20"
-              }
-            },
-            {
-              "className": "org.joget.apps.form.lib.TextField",
-              "properties": {
-                "id": "customer_display_name",
-                "label": "Customer Display Name",
-                "maxlength": "200"
-              }
-            },
-            {
               "className": "org.joget.apps.form.lib.SelectBox",
               "properties": {
-                "readonly": "",
-                "multiple": "",
-                "label": "Customer Match Method",
-                "readonlyLabel": "",
                 "id": "customer_match_method",
+                "label": "Match Method",
                 "options": [
                   {
                     "value": "",
                     "label": "",
+                    "grouping": ""
+                  },
+                  {
+                    "value": "customer_id",
+                    "label": "Customer ID",
                     "grouping": ""
                   },
                   {
@@ -327,6 +604,16 @@
                     "value": "national_id",
                     "label": "National ID",
                     "grouping": ""
+                  },
+                  {
+                    "value": "account_mapping",
+                    "label": "Account Mapping",
+                    "grouping": ""
+                  },
+                  {
+                    "value": "manual_override",
+                    "label": "Manual Override",
+                    "grouping": ""
                   }
                 ],
                 "optionsBinder": {
@@ -334,12 +621,47 @@
                   "properties": {}
                 },
                 "value": "",
+                "multiple": "",
                 "validator": {
                   "className": "",
                   "properties": {}
                 },
+                "readonly": "",
+                "readonlyLabel": "",
                 "controlField": "",
                 "size": "",
+                "workflowVariable": ""
+              }
+            }
+          ]
+        },
+        {
+          "className": "org.joget.apps.form.model.Column",
+          "properties": {
+            "width": "50%"
+          },
+          "elements": [
+            {
+              "className": "org.joget.apps.form.lib.TextField",
+              "properties": {
+                "id": "customer_code",
+                "label": "Customer Code",
+                "readonly": "true",
+                "readonlyLabel": "",
+                "maxlength": "20",
+                "value": "",
+                "workflowVariable": ""
+              }
+            },
+            {
+              "className": "org.joget.apps.form.lib.TextField",
+              "properties": {
+                "id": "customer_display_name",
+                "label": "Customer Display Name",
+                "readonly": "true",
+                "readonlyLabel": "",
+                "maxlength": "200",
+                "value": "",
                 "workflowVariable": ""
               }
             }
@@ -350,21 +672,26 @@
     {
       "className": "org.joget.apps.form.model.Section",
       "properties": {
-        "id": "section_asset",
-        "label": "Asset"
+        "id": "section_asset_resolution",
+        "label": "Asset Resolution",
+        "visibilityControl": "source_tp",
+        "visibilityValue": "secu",
+        "regex": "",
+        "join": "",
+        "reverse": ""
       },
       "elements": [
         {
           "className": "org.joget.apps.form.model.Column",
           "properties": {
-            "width": "100%"
+            "width": "50%"
           },
           "elements": [
             {
               "className": "org.joget.apps.form.lib.TextField",
               "properties": {
                 "id": "resolved_asset_id",
-                "label": "Resolved Asset ID",
+                "label": "Asset ID",
                 "maxlength": "20"
               }
             },
@@ -372,8 +699,16 @@
               "className": "org.joget.apps.form.lib.TextField",
               "properties": {
                 "id": "asset_isin",
-                "label": "Asset ISIN",
-                "maxlength": "12"
+                "label": "ISIN",
+                "maxlength": "12",
+                "validator": {
+                  "className": "org.joget.apps.form.lib.DefaultValidator",
+                  "properties": {
+                    "regex": "^[A-Z]{2}[A-Z0-9]{9}[0-9]$",
+                    "message": "ISIN must be 12 chars: 2 letters + 9 alphanumeric + 1 check digit",
+                    "mandatory": ""
+                  }
+                }
               }
             },
             {
@@ -402,21 +737,26 @@
                   "className": "",
                   "properties": {}
                 },
-                "controlField": "",
-                "size": "",
                 "readonly": "",
                 "readonlyLabel": "",
+                "controlField": "",
+                "size": "",
                 "workflowVariable": ""
               }
-            },
+            }
+          ]
+        },
+        {
+          "className": "org.joget.apps.form.model.Column",
+          "properties": {
+            "width": "50%"
+          },
+          "elements": [
             {
               "className": "org.joget.apps.form.lib.SelectBox",
               "properties": {
-                "readonly": "",
-                "multiple": "",
-                "label": "Asset Class",
-                "readonlyLabel": "",
                 "id": "asset_class",
+                "label": "Asset Class",
                 "options": [],
                 "optionsBinder": {
                   "className": "org.joget.apps.form.lib.FormOptionsBinder",
@@ -433,21 +773,16 @@
                   }
                 },
                 "value": "",
+                "multiple": "",
                 "validator": {
                   "className": "",
                   "properties": {}
                 },
+                "readonly": "",
+                "readonlyLabel": "",
                 "controlField": "asset_category",
                 "size": "",
                 "workflowVariable": ""
-              }
-            },
-            {
-              "className": "org.joget.apps.form.lib.TextField",
-              "properties": {
-                "id": "asset_base_currency",
-                "label": "Asset Base Currency",
-                "maxlength": "3"
               }
             },
             {
@@ -455,15 +790,40 @@
               "properties": {
                 "readonly": "",
                 "multiple": "",
-                "label": "Currency Mismatch Flag",
+                "label": "Asset Base Currency",
                 "readonlyLabel": "",
+                "id": "asset_base_currency",
+                "options": [],
+                "optionsBinder": {
+                  "className": "org.joget.apps.form.lib.FormOptionsBinder",
+                  "properties": {
+                    "formDefId": "currency",
+                    "idColumn": "code",
+                    "labelColumn": "name",
+                    "groupingColumn": "",
+                    "extraCondition": "",
+                    "addEmptyOption": "true",
+                    "emptyLabel": "",
+                    "useAjax": "",
+                    "cacheInterval": ""
+                  }
+                },
+                "value": "",
+                "validator": {
+                  "className": "",
+                  "properties": {}
+                },
+                "controlField": "",
+                "size": "",
+                "workflowVariable": ""
+              }
+            },
+            {
+              "className": "org.joget.apps.form.lib.SelectBox",
+              "properties": {
                 "id": "currency_mismatch_flag",
+                "label": "Currency Mismatch",
                 "options": [
-                  {
-                    "value": "",
-                    "label": "",
-                    "grouping": ""
-                  },
                   {
                     "value": "yes",
                     "label": "Yes",
@@ -480,10 +840,13 @@
                   "properties": {}
                 },
                 "value": "",
+                "multiple": "",
                 "validator": {
                   "className": "",
                   "properties": {}
                 },
+                "readonly": "",
+                "readonlyLabel": "",
                 "controlField": "",
                 "size": "",
                 "workflowVariable": ""
@@ -496,72 +859,62 @@
     {
       "className": "org.joget.apps.form.model.Section",
       "properties": {
-        "id": "section_counterparty",
-        "label": "Counterparty"
+        "id": "section_counterparty_resolution",
+        "label": "Counterparty Resolution"
       },
       "elements": [
         {
           "className": "org.joget.apps.form.model.Column",
           "properties": {
-            "width": "100%"
+            "width": "33%"
           },
           "elements": [
             {
-              "className": "org.joget.apps.form.lib.TextField",
-              "properties": {
-                "id": "custodian_id",
-                "label": "Custodian ID",
-                "maxlength": "50"
-              }
-            },
-            {
-              "className": "org.joget.apps.form.lib.TextField",
-              "properties": {
-                "id": "custodian_short_code",
-                "label": "Custodian Short Code",
-                "maxlength": "20"
-              }
-            },
-            {
-              "className": "org.joget.apps.form.lib.TextField",
-              "properties": {
-                "id": "broker_id",
-                "label": "Broker ID",
-                "maxlength": "50"
-              }
-            },
-            {
-              "className": "org.joget.apps.form.lib.TextField",
-              "properties": {
-                "id": "broker_short_code",
-                "label": "Broker Short Code",
-                "maxlength": "20"
-              }
-            },
-            {
-              "className": "org.joget.apps.form.lib.TextField",
+              "className": "org.joget.apps.form.lib.SelectBox",
               "properties": {
                 "id": "counterparty_id",
-                "label": "Counterparty ID",
-                "maxlength": "50"
+                "label": "Counterparty",
+                "options": [],
+                "optionsBinder": {
+                  "className": "org.joget.apps.form.lib.FormOptionsBinder",
+                  "properties": {
+                    "formDefId": "counterpartyMaster",
+                    "idColumn": "shortCode",
+                    "labelColumn": "shortCode",
+                    "groupingColumn": "",
+                    "extraCondition": "c_isActive = 'true'",
+                    "addEmptyOption": "true",
+                    "emptyLabel": "Select Counterparty",
+                    "useAjax": "true",
+                    "cacheInterval": ""
+                  }
+                },
+                "value": "",
+                "multiple": "",
+                "validator": {
+                  "className": "",
+                  "properties": {}
+                },
+                "readonly": "",
+                "readonlyLabel": "",
+                "controlField": "",
+                "controlValue": "",
+                "size": "",
+                "workflowVariable": ""
               }
             },
             {
-              "className": "org.joget.apps.form.lib.TextField",
+              "className": "org.joget.apps.form.lib.HiddenField",
               "properties": {
                 "id": "counterparty_short_code",
-                "label": "Counterparty Short Code",
-                "maxlength": "20"
+                "value": ""
               }
             },
             {
               "className": "org.joget.apps.form.lib.SelectBox",
               "properties": {
-                "readonly": "",
-                "multiple": "",
-                "label": "Counterparty Source",
-                "readonlyLabel": "",
                 "id": "counterparty_source",
+                "label": "CP Source",
                 "options": [
                   {
                     "value": "",
@@ -577,6 +930,16 @@
                     "value": "statement_source",
                     "label": "Statement Source",
                     "grouping": ""
+                  },
+                  {
+                    "value": "rule_engine",
+                    "label": "Rule Engine",
+                    "grouping": ""
+                  },
+                  {
+                    "value": "manual_override",
+                    "label": "Manual Override",
+                    "grouping": ""
                   }
                 ],
                 "optionsBinder": {
@@ -584,13 +947,114 @@
                   "properties": {}
                 },
                 "value": "",
+                "multiple": "",
                 "validator": {
                   "className": "",
                   "properties": {}
                 },
+                "readonly": "",
+                "readonlyLabel": "",
                 "controlField": "",
                 "size": "",
                 "workflowVariable": ""
+              }
+            }
+          ]
+        },
+        {
+          "className": "org.joget.apps.form.model.Column",
+          "properties": {
+            "width": "33%"
+          },
+          "elements": [
+            {
+              "className": "org.joget.apps.form.lib.SelectBox",
+              "properties": {
+                "id": "custodian_id",
+                "label": "Custodian",
+                "options": [],
+                "optionsBinder": {
+                  "className": "org.joget.apps.form.lib.FormOptionsBinder",
+                  "properties": {
+                    "formDefId": "counterpartyMaster",
+                    "idColumn": "shortCode",
+                    "labelColumn": "shortCode",
+                    "groupingColumn": "",
+                    "extraCondition": "c_counterpartyType = 'Custodian' AND c_isActive = 'true'",
+                    "addEmptyOption": "true",
+                    "emptyLabel": "Select Custodian",
+                    "useAjax": "true",
+                    "cacheInterval": ""
+                  }
+                },
+                "value": "",
+                "multiple": "",
+                "validator": {
+                  "className": "",
+                  "properties": {}
+                },
+                "readonly": "",
+                "readonlyLabel": "",
+                "controlField": "",
+                "controlValue": "",
+                "size": "",
+                "workflowVariable": ""
+              }
+            },
+            {
+              "className": "org.joget.apps.form.lib.HiddenField",
+              "properties": {
+                "id": "custodian_short_code",
+                "value": ""
+              }
+            }
+          ]
+        },
+        {
+          "className": "org.joget.apps.form.model.Column",
+          "properties": {
+            "width": "33%"
+          },
+          "elements": [
+            {
+              "className": "org.joget.apps.form.lib.SelectBox",
+              "properties": {
+                "id": "broker_id",
+                "label": "Broker",
+                "options": [],
+                "optionsBinder": {
+                  "className": "org.joget.apps.form.lib.FormOptionsBinder",
+                  "properties": {
+                    "formDefId": "counterpartyMaster",
+                    "idColumn": "shortCode",
+                    "labelColumn": "shortCode",
+                    "groupingColumn": "",
+                    "extraCondition": "c_counterpartyType = 'Broker' AND c_isActive = 'true'",
+                    "addEmptyOption": "true",
+                    "emptyLabel": "Select Broker",
+                    "useAjax": "true",
+                    "cacheInterval": ""
+                  }
+                },
+                "value": "",
+                "multiple": "",
+                "validator": {
+                  "className": "",
+                  "properties": {}
+                },
+                "readonly": "",
+                "readonlyLabel": "",
+                "controlField": "",
+                "controlValue": "",
+                "size": "",
+                "workflowVariable": ""
+              }
+            },
+            {
+              "className": "org.joget.apps.form.lib.HiddenField",
+              "properties": {
+                "id": "broker_short_code",
+                "value": ""
               }
             }
           ]
@@ -600,24 +1064,216 @@
     {
       "className": "org.joget.apps.form.model.Section",
       "properties": {
-        "id": "section_fee",
-        "label": "Fee"
+        "id": "section_currency_fx",
+        "label": "Currency & FX"
       },
       "elements": [
         {
           "className": "org.joget.apps.form.model.Column",
           "properties": {
-            "width": "100%"
+            "width": "50%"
           },
           "elements": [
             {
               "className": "org.joget.apps.form.lib.SelectBox",
               "properties": {
-                "readonly": "",
+                "id": "validated_currency",
+                "label": "Validated Currency",
+                "options": [],
+                "optionsBinder": {
+                  "className": "org.joget.apps.form.lib.FormOptionsBinder",
+                  "properties": {
+                    "formDefId": "currency",
+                    "idColumn": "code",
+                    "labelColumn": "name",
+                    "groupingColumn": "",
+                    "extraCondition": "",
+                    "addEmptyOption": "true",
+                    "emptyLabel": "",
+                    "useAjax": "",
+                    "cacheInterval": ""
+                  }
+                },
+                "value": "",
                 "multiple": "",
-                "label": "Has Fee",
+                "validator": {
+                  "className": "",
+                  "properties": {}
+                },
+                "readonly": "",
                 "readonlyLabel": "",
+                "controlField": "",
+                "size": "",
+                "workflowVariable": ""
+              }
+            },
+            {
+              "className": "org.joget.apps.form.lib.SelectBox",
+              "properties": {
+                "id": "fx_rate_source",
+                "label": "Rate Source",
+                "options": [
+                  {
+                    "value": "ecb",
+                    "label": "ECB",
+                    "grouping": ""
+                  },
+                  {
+                    "value": "manual_override",
+                    "label": "Manual Override",
+                    "grouping": ""
+                  },
+                  {
+                    "value": "source_file",
+                    "label": "Source File",
+                    "grouping": ""
+                  },
+                  {
+                    "value": "calculated",
+                    "label": "Calculated",
+                    "grouping": ""
+                  }
+                ],
+                "optionsBinder": {
+                  "className": "",
+                  "properties": {}
+                },
+                "value": "",
+                "multiple": "",
+                "validator": {
+                  "className": "",
+                  "properties": {}
+                },
+                "readonly": "",
+                "readonlyLabel": "",
+                "controlField": "",
+                "size": "",
+                "workflowVariable": ""
+              }
+            },
+            {
+              "className": "org.joget.apps.form.lib.SelectBox",
+              "properties": {
+                "id": "requires_eur_parallel",
+                "label": "EUR Parallel",
+                "options": [
+                  {
+                    "value": "yes",
+                    "label": "Yes",
+                    "grouping": ""
+                  },
+                  {
+                    "value": "no",
+                    "label": "No",
+                    "grouping": ""
+                  }
+                ],
+                "optionsBinder": {
+                  "className": "",
+                  "properties": {}
+                },
+                "value": "",
+                "multiple": "",
+                "validator": {
+                  "className": "",
+                  "properties": {}
+                },
+                "readonly": "",
+                "readonlyLabel": "",
+                "controlField": "",
+                "size": "",
+                "workflowVariable": ""
+              }
+            }
+          ]
+        },
+        {
+          "className": "org.joget.apps.form.model.Column",
+          "properties": {
+            "width": "50%"
+          },
+          "elements": [
+            {
+              "className": "org.joget.apps.form.lib.TextField",
+              "properties": {
+                "id": "fx_rate_to_eur",
+                "label": "FX Rate to EUR",
+                "maxlength": "20",
+                "storeNumeric": "true",
+                "validator": {
+                  "className": "org.joget.apps.form.lib.DefaultValidator",
+                  "properties": {
+                    "type": "numeric",
+                    "message": "",
+                    "mandatory": ""
+                  }
+                }
+              }
+            },
+            {
+              "className": "org.joget.apps.form.lib.DatePicker",
+              "properties": {
+                "id": "fx_rate_date",
+                "label": "FX Rate Date",
+                "dataFormat": "yyyy-MM-dd",
+                "yearRange": "c-10:c+10",
+                "readonly": "",
+                "allowManual": "",
+                "datePickerType": "",
+                "currentDateAs": "",
+                "disableWeekends": "",
+                "readonlyLabel": "",
+                "value": "",
+                "validator": {
+                  "className": "",
+                  "properties": {}
+                },
+                "startDateFieldId": "",
+                "endDateFieldId": "",
+                "placeholder": "",
+                "format": "",
+                "workflowVariable": ""
+              }
+            },
+            {
+              "className": "org.joget.apps.form.lib.TextField",
+              "properties": {
+                "id": "base_amount_eur",
+                "label": "Base Amount EUR",
+                "maxlength": "20",
+                "storeNumeric": "true",
+                "validator": {
+                  "className": "org.joget.apps.form.lib.DefaultValidator",
+                  "properties": {
+                    "type": "numeric",
+                    "message": "",
+                    "mandatory": ""
+                  }
+                }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "className": "org.joget.apps.form.model.Section",
+      "properties": {
+        "id": "section_fee_pairing",
+        "label": "Fee & Pairing"
+      },
+      "elements": [
+        {
+          "className": "org.joget.apps.form.model.Column",
+          "properties": {
+            "width": "50%"
+          },
+          "elements": [
+            {
+              "className": "org.joget.apps.form.lib.SelectBox",
+              "properties": {
                 "id": "has_fee",
+                "label": "Has Fee",
                 "options": [
                   {
                     "value": "no",
@@ -635,10 +1291,133 @@
                   "properties": {}
                 },
                 "value": "",
+                "multiple": "",
                 "validator": {
                   "className": "",
                   "properties": {}
                 },
+                "readonly": "",
+                "readonlyLabel": "",
+                "controlField": "",
+                "size": "",
+                "workflowVariable": ""
+              }
+            }
+          ]
+        },
+        {
+          "className": "org.joget.apps.form.model.Column",
+          "properties": {
+            "width": "50%"
+          },
+          "elements": [
+            {
+              "className": "org.joget.apps.form.lib.HiddenField",
+              "properties": {
+                "id": "fee_trx_id",
+                "value": ""
+              }
+            },
+            {
+              "className": "org.joget.apps.form.lib.HiddenField",
+              "properties": {
+                "id": "pair_id",
+                "value": ""
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "className": "org.joget.apps.form.model.Section",
+      "properties": {
+        "id": "section_status_notes",
+        "label": "Status & Notes"
+      },
+      "elements": [
+        {
+          "className": "org.joget.apps.form.model.Column",
+          "properties": {
+            "width": "50%"
+          },
+          "elements": [
+            {
+              "className": "org.joget.apps.form.lib.SelectBox",
+              "properties": {
+                "id": "status",
+                "label": "Status",
+                "value": "new",
+                "options": [
+                  {
+                    "value": "new",
+                    "label": "New",
+                    "grouping": ""
+                  },
+                  {
+                    "value": "processing",
+                    "label": "Processing",
+                    "grouping": ""
+                  },
+                  {
+                    "value": "enriched",
+                    "label": "Enriched",
+                    "grouping": ""
+                  },
+                  {
+                    "value": "error",
+                    "label": "Error",
+                    "grouping": ""
+                  },
+                  {
+                    "value": "manual_review",
+                    "label": "Manual Review",
+                    "grouping": ""
+                  },
+                  {
+                    "value": "in_review",
+                    "label": "In Review",
+                    "grouping": ""
+                  },
+                  {
+                    "value": "adjusted",
+                    "label": "Adjusted",
+                    "grouping": ""
+                  },
+                  {
+                    "value": "ready",
+                    "label": "Ready",
+                    "grouping": ""
+                  },
+                  {
+                    "value": "superseded",
+                    "label": "Superseded",
+                    "grouping": ""
+                  },
+                  {
+                    "value": "confirmed",
+                    "label": "Confirmed",
+                    "grouping": ""
+                  },
+                  {
+                    "value": "paired",
+                    "label": "Paired",
+                    "grouping": ""
+                  }
+                ],
+                "optionsBinder": {
+                  "className": "",
+                  "properties": {}
+                },
+                "multiple": "",
+                "validator": {
+                  "className": "org.joget.apps.form.lib.DefaultValidator",
+                  "properties": {
+                    "mandatory": "true"
+                  }
+                },
+                "readonly": "",
+                "readonlyLabel": "",
                 "controlField": "",
                 "size": "",
                 "workflowVariable": ""
@@ -647,149 +1426,46 @@
             {
               "className": "org.joget.apps.form.lib.TextField",
               "properties": {
-                "id": "fee_trx_id",
-                "label": "Fee Transaction ID",
-                "maxlength": "50"
-              }
-            },
-            {
-              "className": "org.joget.apps.form.lib.TextField",
-              "properties": {
-                "id": "fee_amount",
-                "label": "Fee Amount",
-                "maxlength": "20"
-              }
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "className": "org.joget.apps.form.model.Section",
-      "properties": {
-        "id": "section_amounts",
-        "label": "Amounts"
-      },
-      "elements": [
-        {
-          "className": "org.joget.apps.form.model.Column",
-          "properties": {
-            "width": "100%"
-          },
-          "elements": [
-            {
-              "className": "org.joget.apps.form.lib.DatePicker",
-              "properties": {
-                "readonly": "",
-                "allowManual": "",
-                "yearRange": "c-10:c+10",
-                "dataFormat": "yyyy-MM-dd",
-                "label": "Transaction Date",
-                "datePickerType": "",
-                "currentDateAs": "",
-                "disableWeekends": "",
-                "readonlyLabel": "",
-                "id": "transaction_date",
-                "value": "",
-                "validator": {
-                  "className": "",
-                  "properties": {}
-                },
-                "startDateFieldId": "",
-                "endDateFieldId": "",
-                "placeholder": "",
-                "format": "",
-                "workflowVariable": ""
-              }
-            },
-            {
-              "className": "org.joget.apps.form.lib.DatePicker",
-              "properties": {
-                "readonly": "",
-                "allowManual": "",
-                "yearRange": "c-10:c+10",
-                "dataFormat": "yyyy-MM-dd",
-                "label": "Settlement Date",
-                "datePickerType": "",
-                "currentDateAs": "",
-                "disableWeekends": "",
-                "readonlyLabel": "",
-                "id": "settlement_date",
-                "value": "",
-                "validator": {
-                  "className": "",
-                  "properties": {}
-                },
-                "startDateFieldId": "",
-                "endDateFieldId": "",
-                "placeholder": "",
-                "format": "",
-                "workflowVariable": ""
-              }
-            },
-            {
-              "className": "org.joget.apps.form.lib.TextField",
-              "properties": {
-                "id": "original_amount",
-                "label": "Original Amount",
-                "maxlength": "20"
-              }
-            },
-            {
-              "className": "org.joget.apps.form.lib.TextField",
-              "properties": {
-                "id": "total_amount",
-                "label": "Total Amount",
-                "maxlength": "20"
-              }
-            },
-            {
-              "className": "org.joget.apps.form.lib.TextField",
-              "properties": {
-                "id": "original_currency",
-                "label": "Original Currency",
-                "maxlength": "3"
-              }
-            },
-            {
-              "className": "org.joget.apps.form.lib.TextArea",
-              "properties": {
-                "id": "description",
-                "label": "Description",
-                "rows": "5"
-              }
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "className": "org.joget.apps.form.model.Section",
-      "properties": {
-        "id": "section_status",
-        "label": "Pipeline Status"
-      },
-      "elements": [
-        {
-          "className": "org.joget.apps.form.model.Column",
-          "properties": {
-            "width": "100%"
-          },
-          "elements": [
-            {
-              "className": "org.joget.apps.form.lib.TextField",
-              "properties": {
                 "id": "enrichment_timestamp",
-                "label": "Enrichment Timestamp",
-                "maxlength": "30"
+                "label": "Enriched At",
+                "readonly": "true",
+                "readonlyLabel": "",
+                "maxlength": "30",
+                "value": "",
+                "workflowVariable": ""
               }
-            },
+            }
+          ]
+        },
+        {
+          "className": "org.joget.apps.form.model.Column",
+          "properties": {
+            "width": "50%"
+          },
+          "elements": [
             {
               "className": "org.joget.apps.form.lib.TextArea",
               "properties": {
                 "id": "error_message",
-                "label": "Error Message",
-                "rows": "5"
+                "label": "Error",
+                "readonly": "true",
+                "readonlyLabel": "",
+                "rows": "3"
+              }
+            },
+            {
+              "className": "org.joget.apps.form.lib.TextArea",
+              "properties": {
+                "id": "processing_notes",
+                "label": "Notes",
+                "rows": "3"
+              }
+            },
+            {
+              "className": "org.joget.apps.form.lib.HiddenField",
+              "properties": {
+                "id": "version",
+                "value": "1"
               }
             }
           ]

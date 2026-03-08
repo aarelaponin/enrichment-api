@@ -49,6 +49,10 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
     private static final EnrichmentService SERVICE = new EnrichmentService();
     private static final StatusManager STATUS_MANAGER = new StatusManager();
 
+    /** Fields stored as strings but representing numeric values — need Java-side sort. */
+    private static final Set<String> NUMERIC_SORT_FIELDS = Set.of(
+            "original_amount", "fee_amount", "total_amount");
+
     // ValidationConfig cache (M4)
     private int cachedConfigHash;
     private ValidationConfig cachedConfig;
@@ -57,7 +61,7 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
 
     @Override
     public String getName() {
-        return "EnrichmentAPI";
+        return "enrichment-api";
     }
 
     @Override
@@ -173,6 +177,23 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
             @Response(responseCode = 200, description = "Plugin is healthy")
     })
     public ApiResponse health() {
+        // Check validationConfig
+        try {
+            String configStr = getPropertyString("validationConfig");
+            if (configStr == null || configStr.trim().isEmpty()) {
+                Map<String, Object> err = new LinkedHashMap<>();
+                err.put("status", "error");
+                err.put("message", "validationConfig property is not set or invalid JSON");
+                return new ApiResponse(500, err);
+            }
+            new JSONObject(configStr); // parse check
+        } catch (Exception e) {
+            Map<String, Object> err = new LinkedHashMap<>();
+            err.put("status", "error");
+            err.put("message", "validationConfig property is not set or invalid JSON");
+            return new ApiResponse(500, err);
+        }
+
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("status", "ok");
         result.put("plugin", getName());
@@ -210,11 +231,11 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
             @Param(value = "order", required = false,
                     description = "Sort order: asc or desc (default: asc)") String order,
             @Param(value = "save", required = false,
-                    description = "JSON body for inline save — when present, performs update instead of list") String save
+                    description = "JSON body for inline save or batch action — dispatched by content") String save
     ) {
-        // Dispatch to save handler if 'save' parameter is present
+        // Dispatch to save/action handler if 'save' parameter is present
         if (save != null && !save.trim().isEmpty()) {
-            return handleInlineSave(save);
+            return dispatchSaveParam(save);
         }
 
         long t0 = System.currentTimeMillis();
@@ -231,7 +252,7 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
             else if ("modified".equals(sortField)) sortField = "dateModified";
 
             if (!isStandardField(sortField) && !SAFE_FIELD_NAME.matcher(sortField).matches()) {
-                return badRequest("Invalid sort field name: " + sortField, t0);
+                return invalidParams("Invalid sort field name: " + sortField, t0);
             }
 
             StringBuilder cond = new StringBuilder();
@@ -244,7 +265,7 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
                     if (kv.length == 2 && !kv[0].trim().isEmpty() && !kv[1].trim().isEmpty()) {
                         String fieldName = kv[0].trim();
                         if (!SAFE_FIELD_NAME.matcher(fieldName).matches()) {
-                            return badRequest("Invalid filter field name: " + fieldName, t0);
+                            return invalidParams("Invalid filter field name: " + fieldName, t0);
                         }
                         cond.append(cond.length() == 0 ? "WHERE " : " AND ");
                         cond.append("e.customProperties.").append(fieldName).append(" = ?");
@@ -258,7 +279,7 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
                 if (kv.length == 2 && !kv[0].trim().isEmpty() && !kv[1].trim().isEmpty()) {
                     String fieldName = kv[0].trim();
                     if (!SAFE_FIELD_NAME.matcher(fieldName).matches()) {
-                        return badRequest("Invalid search field name: " + fieldName, t0);
+                        return invalidParams("Invalid search field name: " + fieldName, t0);
                     }
                     cond.append(cond.length() == 0 ? "WHERE " : " AND ");
                     cond.append("e.customProperties.").append(fieldName).append(" LIKE ?");
@@ -273,14 +294,40 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
 
             int start = (pg - 1) * ps;
             long total = dao.count(null, tableName, condition, paramsArr);
-            FormRowSet rows = dao.find(null, tableName, condition, paramsArr,
-                    sortField, sortDesc, start, ps);
 
             List<Map<String, Object>> records = new ArrayList<>();
-            if (rows != null) {
-                for (Object obj : rows) {
-                    if (obj instanceof FormRow) {
-                        records.add(rowToMap((FormRow) obj));
+
+            if (NUMERIC_SORT_FIELDS.contains(sortField)) {
+                // Joget stores all values as VARCHAR — numeric fields sort lexicographically.
+                // Fetch all matching rows, sort numerically in Java, then paginate.
+                FormRowSet allRows = dao.find(null, tableName, condition, paramsArr,
+                        "dateCreated", Boolean.FALSE, 0, (int) total);
+                List<Map<String, Object>> all = new ArrayList<>();
+                if (allRows != null) {
+                    for (Object obj : allRows) {
+                        if (obj instanceof FormRow) {
+                            all.add(rowToMap((FormRow) obj));
+                        }
+                    }
+                }
+                final String sf = sortField;
+                final boolean isDesc = Boolean.TRUE.equals(sortDesc);
+                all.sort((a, b) -> {
+                    double va = parseDouble(a.get(sf));
+                    double vb = parseDouble(b.get(sf));
+                    return isDesc ? Double.compare(vb, va) : Double.compare(va, vb);
+                });
+                int from = Math.min(start, all.size());
+                int to = Math.min(start + ps, all.size());
+                records = new ArrayList<>(all.subList(from, to));
+            } else {
+                FormRowSet rows = dao.find(null, tableName, condition, paramsArr,
+                        sortField, sortDesc, start, ps);
+                if (rows != null) {
+                    for (Object obj : rows) {
+                        if (obj instanceof FormRow) {
+                            records.add(rowToMap((FormRow) obj));
+                        }
                     }
                 }
             }
@@ -301,7 +348,7 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
 
         } catch (Exception e) {
             LogUtil.error(CLASS_NAME, e, "Error fetching records from table: " + tableName);
-            return internalError(t0);
+            return databaseError("Error fetching records from table: " + tableName, t0);
         }
     }
 
@@ -336,7 +383,7 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
 
         } catch (Exception e) {
             LogUtil.error(CLASS_NAME, e, "Error loading record: " + id);
-            return internalError(t0);
+            return databaseError("Error loading record: " + id, t0);
         }
     }
 
@@ -364,7 +411,7 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
             JSONObject body = new JSONObject(requestBody);
 
             if (!body.has("version")) {
-                return badRequest("Missing required field: version", t0);
+                return validationError("Missing required field: version", t0);
             }
             int expectedVersion = body.getInt("version");
 
@@ -406,15 +453,25 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
             return new ApiResponse(400, err);
 
         } catch (InvalidTransitionException e) {
+            Set<Status> valid = STATUS_MANAGER.getValidTransitions(
+                    EntityType.ENRICHMENT, e.getFromStatus());
+            List<String> validCodes = new ArrayList<>();
+            for (Status s : valid) {
+                validCodes.add(s.getCode());
+            }
+
             Map<String, Object> err = new HashMap<>();
             err.put("error", "INVALID_TRANSITION");
             err.put("message", e.getMessage());
+            err.put("currentStatus", e.getFromStatus() != null ? e.getFromStatus().getCode() : null);
+            err.put("targetStatus", e.getToStatus() != null ? e.getToStatus().getCode() : null);
+            err.put("validTransitions", validCodes);
             err.put("ms", System.currentTimeMillis() - t0);
-            return new ApiResponse(400, err);
+            return new ApiResponse(422, err);
 
         } catch (Exception e) {
             LogUtil.error(CLASS_NAME, e, "Error updating record: " + id);
-            return internalError(t0);
+            return databaseError("Error updating record: " + id, t0);
         }
     }
 
@@ -444,14 +501,14 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
 
             String targetStatusCode = body.optString("targetStatus", "");
             if (targetStatusCode.isEmpty()) {
-                return badRequest("Missing required field: targetStatus", t0);
+                return validationError("Missing required field: targetStatus", t0);
             }
 
             Status targetStatus;
             try {
                 targetStatus = Status.fromCode(targetStatusCode);
             } catch (IllegalArgumentException e) {
-                return badRequest("Unknown status code: " + targetStatusCode, t0);
+                return validationError("Unknown status code: " + targetStatusCode, t0);
             }
 
             String reason = body.optString("reason", "Status transition via API");
@@ -474,13 +531,15 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
             Map<String, Object> err = new HashMap<>();
             err.put("error", "INVALID_TRANSITION");
             err.put("message", e.getMessage());
+            err.put("currentStatus", e.getFromStatus() != null ? e.getFromStatus().getCode() : null);
+            err.put("targetStatus", e.getToStatus() != null ? e.getToStatus().getCode() : null);
             err.put("validTransitions", validCodes);
             err.put("ms", System.currentTimeMillis() - t0);
-            return new ApiResponse(400, err);
+            return new ApiResponse(422, err);
 
         } catch (Exception e) {
             LogUtil.error(CLASS_NAME, e, "Error transitioning status for record: " + id);
-            return internalError(t0);
+            return databaseError("Error transitioning status for record: " + id, t0);
         }
     }
 
@@ -508,19 +567,19 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
 
             JSONArray idsArr = body.optJSONArray("recordIds");
             if (idsArr == null || idsArr.length() == 0) {
-                return badRequest("Missing or empty recordIds array", t0);
+                return validationError("Missing or empty recordIds array", t0);
             }
 
             String targetStatusCode = body.optString("targetStatus", "");
             if (targetStatusCode.isEmpty()) {
-                return badRequest("Missing required field: targetStatus", t0);
+                return validationError("Missing required field: targetStatus", t0);
             }
 
             Status targetStatus;
             try {
                 targetStatus = Status.fromCode(targetStatusCode);
             } catch (IllegalArgumentException e) {
-                return badRequest("Unknown status code: " + targetStatusCode, t0);
+                return validationError("Unknown status code: " + targetStatusCode, t0);
             }
 
             String reason = body.optString("reason", "Batch status transition via API");
@@ -537,7 +596,7 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
 
         } catch (Exception e) {
             LogUtil.error(CLASS_NAME, e, "Error in batch status transition");
-            return internalError(t0);
+            return databaseError("Batch transition failed", t0);
         }
     }
 
@@ -565,8 +624,8 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
             SERVICE.deleteRecord(tableName, id);
 
             Map<String, Object> result = new LinkedHashMap<>();
-            result.put("status", "deleted");
             result.put("id", id);
+            result.put("message", "Record deleted successfully");
             result.put("ms", System.currentTimeMillis() - t0);
             return new ApiResponse(200, result);
 
@@ -577,12 +636,13 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
             Map<String, Object> err = new HashMap<>();
             err.put("error", "DELETE_NOT_ALLOWED");
             err.put("message", e.getMessage());
+            err.put("currentStatus", e.getCurrentStatus());
             err.put("ms", System.currentTimeMillis() - t0);
             return new ApiResponse(400, err);
 
         } catch (Exception e) {
             LogUtil.error(CLASS_NAME, e, "Error deleting record: " + id);
-            return internalError(t0);
+            return databaseError("Error deleting record: " + id, t0);
         }
     }
 
@@ -613,7 +673,7 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
 
         } catch (Exception e) {
             LogUtil.error(CLASS_NAME, e, "Error getting summary");
-            return internalError(t0);
+            return databaseError("Error computing summary", t0);
         }
     }
 
@@ -639,7 +699,7 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
         try {
             ValidationConfig config = getValidationConfig();
             if (config.getReconciliation() == null) {
-                return badRequest("Reconciliation section is not configured in validationConfig", t0);
+                return configError("Reconciliation config is not set", t0);
             }
 
             Map<String, Object> result = SERVICE.getReconciliation(tableName, statementId, config);
@@ -648,7 +708,7 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
 
         } catch (Exception e) {
             LogUtil.error(CLASS_NAME, e, "Error computing reconciliation for: " + statementId);
-            return internalError(t0);
+            return databaseError("Error computing reconciliation", t0);
         }
     }
 
@@ -673,17 +733,17 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
 
         try {
             if (!isBatchOperationsEnabled()) {
-                return badRequest("Batch operations are disabled. Enable 'enableBatchOperations' in plugin properties.", t0);
+                return configError("Batch operations are disabled. Enable 'enableBatchOperations' in plugin properties.", t0);
             }
 
             JSONObject body = new JSONObject(requestBody);
 
             JSONArray idsArr = body.optJSONArray("recordIds");
             if (idsArr == null || idsArr.length() == 0) {
-                return badRequest("Missing or empty recordIds array", t0);
+                return validationError("Missing or empty recordIds array", t0);
             }
 
-            boolean allowPartial = body.optBoolean("allowPartial", true);
+            boolean allowPartial = body.optBoolean("allowPartial", false);
 
             List<String> recordIds = new ArrayList<>();
             for (int i = 0; i < idsArr.length(); i++) {
@@ -693,16 +753,24 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
             ValidationConfig config = getValidationConfig();
             Map<String, Object> result = SERVICE.confirmRecords(
                     tableName, recordIds, allowPartial, config);
+
+            // If confirmed:0 with validation errors, return 400
+            Object confirmedCount = result.get("confirmed");
+            List<?> valErrors = (List<?>) result.get("validationErrors");
+            if (confirmedCount != null && ((Number) confirmedCount).intValue() == 0
+                    && valErrors != null && !valErrors.isEmpty()) {
+                result.put("error", "VALIDATION_FAILED");
+                result.put("message", "Confirmation failed: validation errors");
+                result.put("ms", System.currentTimeMillis() - t0);
+                return new ApiResponse(400, result);
+            }
+
             result.put("ms", System.currentTimeMillis() - t0);
             return new ApiResponse(200, result);
 
         } catch (Exception e) {
             LogUtil.error(CLASS_NAME, e, "Error confirming records");
-            Map<String, Object> err = new HashMap<>();
-            err.put("error", "BATCH_FAILED");
-            err.put("message", "Confirmation failed: " + e.getMessage() + ". No records were changed.");
-            err.put("ms", System.currentTimeMillis() - t0);
-            return new ApiResponse(500, err);
+            return databaseError("Confirmation failed: " + e.getMessage(), t0);
         }
     }
 
@@ -729,13 +797,13 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
 
         try {
             if (!isBatchOperationsEnabled()) {
-                return badRequest("Batch operations are disabled. Enable 'enableBatchOperations' in plugin properties.", t0);
+                return configError("Batch operations are disabled. Enable 'enableBatchOperations' in plugin properties.", t0);
             }
 
             JSONObject body = new JSONObject(requestBody);
             JSONArray allocArr = body.optJSONArray("allocations");
             if (allocArr == null || allocArr.length() == 0) {
-                return badRequest("Missing or empty allocations array", t0);
+                return validationError("Missing or empty allocations array", t0);
             }
 
             List<Map<String, String>> allocations = new ArrayList<>();
@@ -759,11 +827,15 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
             return notFound(e.getMessage(), t0);
 
         } catch (IllegalArgumentException e) {
-            return badRequest(e.getMessage(), t0);
+            String msg = e.getMessage();
+            if (msg != null && msg.contains("does not allow split")) {
+                return invalidStatus(msg, t0);
+            }
+            return validationFailed(msg, t0);
 
         } catch (Exception e) {
             LogUtil.error(CLASS_NAME, e, "Error splitting record: " + id);
-            return internalError(t0);
+            return databaseError("Split failed: " + e.getMessage(), t0);
         }
     }
 
@@ -789,14 +861,18 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
 
         try {
             if (!isBatchOperationsEnabled()) {
-                return badRequest("Batch operations are disabled. Enable 'enableBatchOperations' in plugin properties.", t0);
+                return configError("Batch operations are disabled. Enable 'enableBatchOperations' in plugin properties.", t0);
             }
 
             JSONObject body = new JSONObject(requestBody);
 
-            JSONArray idsArr = body.optJSONArray("recordIds");
+            // Accept sourceIds (spec primary) with recordIds fallback
+            JSONArray idsArr = body.optJSONArray("sourceIds");
             if (idsArr == null || idsArr.length() == 0) {
-                return badRequest("Missing or empty recordIds array", t0);
+                idsArr = body.optJSONArray("recordIds");
+            }
+            if (idsArr == null || idsArr.length() == 0) {
+                return validationError("Missing or empty sourceIds/recordIds array", t0);
             }
 
             List<String> sourceIds = new ArrayList<>();
@@ -824,15 +900,101 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
             return notFound(e.getMessage(), t0);
 
         } catch (IllegalArgumentException e) {
-            return badRequest(e.getMessage(), t0);
+            String msg = e.getMessage();
+            if (msg != null && (msg.contains("has status") || msg.contains("does not allow"))) {
+                return invalidStatus(msg, t0);
+            }
+            return validationFailed(msg, t0);
 
         } catch (Exception e) {
             LogUtil.error(CLASS_NAME, e, "Error merging records");
-            return internalError(t0);
+            return databaseError("Merge failed: " + e.getMessage(), t0);
         }
     }
 
-    // ── Inline save (dispatched from /records?save=...) ───────────────────
+    // ── Save param dispatcher (inline save or batch action) ────────────────
+
+    /**
+     * Dispatches the 'save' query param based on JSON content.
+     * Dispatch order (most specific first):
+     * 1. create (has create + fields)
+     * 2. split (has split + id + allocations)
+     * 3. merge (has merge + sourceIds/recordIds)
+     * 4. delete (has delete + id)
+     * 5. statusTransition (has statusTransition + id + targetStatus)
+     * 6. confirm (has confirm + recordIds)
+     * 7. batch transition (has targetStatus + recordIds)
+     * 8. inline save (fallback)
+     */
+    private ApiResponse dispatchSaveParam(String json) {
+        try {
+            JSONObject peek = new JSONObject(json);
+            if (peek.has("create") && peek.has("fields")) {
+                return handleCreate(json);
+            }
+            if (peek.has("split") && peek.has("id") && peek.has("allocations")) {
+                return handleSplit(json);
+            }
+            if (peek.has("merge") && (peek.has("sourceIds") || peek.has("recordIds"))) {
+                return handleMerge(json);
+            }
+            if (peek.has("delete") && peek.has("id")) {
+                return handleDelete(json);
+            }
+            if (peek.has("statusTransition") && peek.has("id") && peek.has("targetStatus")) {
+                return handleStatusTransition(json);
+            }
+            if (peek.has("confirm") && peek.has("recordIds")) {
+                return handleConfirm(json);
+            }
+            if (peek.has("targetStatus") && peek.has("recordIds")) {
+                return handleBatchAction(json);
+            }
+            return handleInlineSave(json);
+        } catch (Exception e) {
+            long t0 = System.currentTimeMillis();
+            return validationError("Invalid JSON in save parameter: " + e.getMessage(), t0);
+        }
+    }
+
+    // ── Create record ──────────────────────────────────────────────────────
+
+    /**
+     * Handles record creation via the save query param dispatch.
+     * JSON: {create:true, fields:{internal_type:"...", debit_credit:"D", ...}}
+     */
+    private ApiResponse handleCreate(String createJson) {
+        long t0 = System.currentTimeMillis();
+        String tableName = getTableName();
+
+        try {
+            JSONObject body = new JSONObject(createJson);
+            JSONObject fieldsObj = body.optJSONObject("fields");
+            if (fieldsObj == null || fieldsObj.length() == 0) {
+                return validationError("Missing or empty 'fields' object", t0);
+            }
+
+            Map<String, String> fields = new HashMap<>();
+            Iterator<String> keys = fieldsObj.keys();
+            while (keys.hasNext()) {
+                String key = keys.next();
+                fields.put(key, fieldsObj.optString(key, ""));
+            }
+
+            Map<String, Object> result = SERVICE.createRecord(tableName, fields);
+            result.put("ms", System.currentTimeMillis() - t0);
+            return new ApiResponse(201, result);
+
+        } catch (IllegalArgumentException e) {
+            return validationFailed(e.getMessage(), t0);
+
+        } catch (Exception e) {
+            LogUtil.error(CLASS_NAME, e, "Error creating record via dispatch");
+            return databaseError("Create failed: " + e.getMessage(), t0);
+        }
+    }
+
+    // ── Inline save ─────────────────────────────────────────────────────────
 
     /**
      * Handles inline save via the records endpoint.
@@ -847,10 +1009,10 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
 
             String id = body.optString("id", "");
             if (id.isEmpty()) {
-                return badRequest("Missing required field: id", t0);
+                return validationError("Missing required field: id", t0);
             }
             if (!body.has("version")) {
-                return badRequest("Missing required field: version", t0);
+                return validationError("Missing required field: version", t0);
             }
             int expectedVersion = body.getInt("version");
 
@@ -892,15 +1054,370 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
             return new ApiResponse(400, err);
 
         } catch (InvalidTransitionException e) {
+            Set<Status> valid = STATUS_MANAGER.getValidTransitions(
+                    EntityType.ENRICHMENT, e.getFromStatus());
+            List<String> validCodes = new ArrayList<>();
+            for (Status s : valid) {
+                validCodes.add(s.getCode());
+            }
+
             Map<String, Object> err = new HashMap<>();
             err.put("error", "INVALID_TRANSITION");
             err.put("message", e.getMessage());
+            err.put("currentStatus", e.getFromStatus() != null ? e.getFromStatus().getCode() : null);
+            err.put("targetStatus", e.getToStatus() != null ? e.getToStatus().getCode() : null);
+            err.put("validTransitions", validCodes);
+            err.put("ms", System.currentTimeMillis() - t0);
+            return new ApiResponse(422, err);
+
+        } catch (Exception e) {
+            LogUtil.error(CLASS_NAME, e, "Error in inline save");
+            return databaseError("Error in inline save: " + e.getMessage(), t0);
+        }
+    }
+
+    // ── Split via dispatch (from /records?save=...) ─────────────────────
+
+    /**
+     * Handles split via the save query param dispatch.
+     * JSON: {split:true, id:"...", allocations:[...]}
+     */
+    private ApiResponse handleSplit(String splitJson) {
+        long t0 = System.currentTimeMillis();
+        String tableName = getTableName();
+
+        try {
+            if (!isBatchOperationsEnabled()) {
+                return configError("Batch operations are disabled. Enable 'enableBatchOperations' in plugin properties.", t0);
+            }
+
+            JSONObject body = new JSONObject(splitJson);
+            String id = body.optString("id", "");
+            if (id.isEmpty()) {
+                return validationError("Missing required field: id", t0);
+            }
+
+            JSONArray allocArr = body.optJSONArray("allocations");
+            if (allocArr == null || allocArr.length() == 0) {
+                return validationError("Missing or empty allocations array", t0);
+            }
+
+            List<Map<String, String>> allocations = new ArrayList<>();
+            for (int i = 0; i < allocArr.length(); i++) {
+                JSONObject allocObj = allocArr.getJSONObject(i);
+                Map<String, String> alloc = new HashMap<>();
+                Iterator<String> keys = allocObj.keys();
+                while (keys.hasNext()) {
+                    String key = keys.next();
+                    alloc.put(key, allocObj.optString(key, ""));
+                }
+                allocations.add(alloc);
+            }
+
+            ValidationConfig config = getValidationConfig();
+            Map<String, Object> result = SERVICE.splitRecord(tableName, id, allocations, config);
+            result.put("ms", System.currentTimeMillis() - t0);
+            return new ApiResponse(200, result);
+
+        } catch (RecordNotFoundException e) {
+            return notFound(e.getMessage(), t0);
+
+        } catch (IllegalArgumentException e) {
+            String msg = e.getMessage();
+            if (msg != null && msg.contains("does not allow split")) {
+                return invalidStatus(msg, t0);
+            }
+            return validationFailed(msg, t0);
+
+        } catch (Exception e) {
+            LogUtil.error(CLASS_NAME, e, "Error splitting record via dispatch");
+            return databaseError("Split failed: " + e.getMessage(), t0);
+        }
+    }
+
+    // ── Merge via dispatch (from /records?save=...) ───────────────────
+
+    /**
+     * Handles merge via the save query param dispatch.
+     * JSON: {merge:true, sourceIds:"id1,id2", mergedFields:{}}
+     */
+    private ApiResponse handleMerge(String mergeJson) {
+        long t0 = System.currentTimeMillis();
+        String tableName = getTableName();
+
+        try {
+            if (!isBatchOperationsEnabled()) {
+                return configError("Batch operations are disabled. Enable 'enableBatchOperations' in plugin properties.", t0);
+            }
+
+            JSONObject body = new JSONObject(mergeJson);
+
+            // Accept sourceIds (comma-sep string) with recordIds fallback
+            String idsStr = body.optString("sourceIds", "");
+            if (idsStr.isEmpty()) {
+                idsStr = body.optString("recordIds", "");
+            }
+            if (idsStr.isEmpty()) {
+                return validationError("Missing or empty sourceIds/recordIds", t0);
+            }
+
+            List<String> sourceIds = new ArrayList<>();
+            String[] idParts = idsStr.split(",");
+            for (String part : idParts) {
+                String id = part.trim();
+                if (!id.isEmpty()) sourceIds.add(id);
+            }
+
+            if (sourceIds.isEmpty()) {
+                return validationError("No valid record IDs provided", t0);
+            }
+
+            Map<String, String> mergedFields = new HashMap<>();
+            JSONObject mfObj = body.optJSONObject("mergedFields");
+            if (mfObj != null) {
+                Iterator<String> keys = mfObj.keys();
+                while (keys.hasNext()) {
+                    String key = keys.next();
+                    mergedFields.put(key, mfObj.optString(key, ""));
+                }
+            }
+
+            ValidationConfig config = getValidationConfig();
+            Map<String, Object> result = SERVICE.mergeRecords(
+                    tableName, sourceIds, mergedFields, config);
+            result.put("ms", System.currentTimeMillis() - t0);
+            return new ApiResponse(200, result);
+
+        } catch (RecordNotFoundException e) {
+            return notFound(e.getMessage(), t0);
+
+        } catch (IllegalArgumentException e) {
+            String msg = e.getMessage();
+            if (msg != null && (msg.contains("has status") || msg.contains("does not allow"))) {
+                return invalidStatus(msg, t0);
+            }
+            return validationFailed(msg, t0);
+
+        } catch (Exception e) {
+            LogUtil.error(CLASS_NAME, e, "Error merging records via dispatch");
+            return databaseError("Merge failed: " + e.getMessage(), t0);
+        }
+    }
+
+    // ── Delete via dispatch (from /records?save=...) ──────────────────
+
+    /**
+     * Handles delete via the save query param dispatch.
+     * JSON: {delete:true, id:"..."}
+     */
+    private ApiResponse handleDelete(String deleteJson) {
+        long t0 = System.currentTimeMillis();
+        String tableName = getTableName();
+
+        try {
+            JSONObject body = new JSONObject(deleteJson);
+            String id = body.optString("id", "");
+            if (id.isEmpty()) {
+                return validationError("Missing required field: id", t0);
+            }
+
+            SERVICE.deleteRecord(tableName, id);
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("id", id);
+            result.put("message", "Record deleted successfully");
+            result.put("ms", System.currentTimeMillis() - t0);
+            return new ApiResponse(200, result);
+
+        } catch (RecordNotFoundException e) {
+            return notFound(e.getMessage(), t0);
+
+        } catch (DeleteNotAllowedException e) {
+            Map<String, Object> err = new HashMap<>();
+            err.put("error", "DELETE_NOT_ALLOWED");
+            err.put("message", e.getMessage());
+            err.put("currentStatus", e.getCurrentStatus());
             err.put("ms", System.currentTimeMillis() - t0);
             return new ApiResponse(400, err);
 
         } catch (Exception e) {
-            LogUtil.error(CLASS_NAME, e, "Error in inline save");
-            return internalError(t0);
+            LogUtil.error(CLASS_NAME, e, "Error deleting record via dispatch");
+            return databaseError("Error deleting record: " + e.getMessage(), t0);
+        }
+    }
+
+    // ── Status transition via dispatch (from /records?save=...) ───────
+
+    /**
+     * Handles single status transition via the save query param dispatch.
+     * JSON: {statusTransition:true, id:"...", targetStatus:"...", reason:"..."}
+     */
+    private ApiResponse handleStatusTransition(String transitionJson) {
+        long t0 = System.currentTimeMillis();
+        String tableName = getTableName();
+
+        try {
+            JSONObject body = new JSONObject(transitionJson);
+            String id = body.optString("id", "");
+            if (id.isEmpty()) {
+                return validationError("Missing required field: id", t0);
+            }
+
+            String targetStatusCode = body.optString("targetStatus", "");
+            if (targetStatusCode.isEmpty()) {
+                return validationError("Missing required field: targetStatus", t0);
+            }
+
+            Status targetStatus;
+            try {
+                targetStatus = Status.fromCode(targetStatusCode);
+            } catch (IllegalArgumentException e) {
+                return validationError("Unknown status code: " + targetStatusCode, t0);
+            }
+
+            String reason = body.optString("reason", "Status transition via workspace");
+
+            Map<String, Object> result = SERVICE.transitionStatus(tableName, id, targetStatus, reason);
+            result.put("ms", System.currentTimeMillis() - t0);
+            return new ApiResponse(200, result);
+
+        } catch (RecordNotFoundException e) {
+            return notFound(e.getMessage(), t0);
+
+        } catch (InvalidTransitionException e) {
+            Set<Status> valid = STATUS_MANAGER.getValidTransitions(
+                    EntityType.ENRICHMENT, e.getFromStatus());
+            List<String> validCodes = new ArrayList<>();
+            for (Status s : valid) {
+                validCodes.add(s.getCode());
+            }
+
+            Map<String, Object> err = new HashMap<>();
+            err.put("error", "INVALID_TRANSITION");
+            err.put("message", e.getMessage());
+            err.put("currentStatus", e.getFromStatus() != null ? e.getFromStatus().getCode() : null);
+            err.put("targetStatus", e.getToStatus() != null ? e.getToStatus().getCode() : null);
+            err.put("validTransitions", validCodes);
+            err.put("ms", System.currentTimeMillis() - t0);
+            return new ApiResponse(422, err);
+
+        } catch (Exception e) {
+            LogUtil.error(CLASS_NAME, e, "Error transitioning status via dispatch");
+            return databaseError("Status transition failed: " + e.getMessage(), t0);
+        }
+    }
+
+    // ── Batch action (dispatched from /records?save=...) ──────────────────
+
+    /**
+     * Handles batch status transition via the records endpoint.
+     * JSON contains targetStatus, recordIds (comma-separated string), and optional reason.
+     * Comma-separated string avoids [] brackets in URL which Tomcat rejects.
+     */
+    private ApiResponse handleBatchAction(String actionJson) {
+        long t0 = System.currentTimeMillis();
+        String tableName = getTableName();
+
+        try {
+            JSONObject body = new JSONObject(actionJson);
+
+            String idsStr = body.optString("recordIds", "");
+            if (idsStr.isEmpty()) {
+                return validationError("Missing or empty recordIds", t0);
+            }
+
+            String targetStatusCode = body.optString("targetStatus", "");
+            if (targetStatusCode.isEmpty()) {
+                return validationError("Missing required field: targetStatus", t0);
+            }
+
+            Status targetStatus;
+            try {
+                targetStatus = Status.fromCode(targetStatusCode);
+            } catch (IllegalArgumentException e) {
+                return validationError("Unknown status code: " + targetStatusCode, t0);
+            }
+
+            String reason = body.optString("reason", "Batch status transition via workspace");
+
+            List<String> recordIds = new ArrayList<>();
+            String[] idParts = idsStr.split(",");
+            for (int i = 0; i < idParts.length; i++) {
+                String id = idParts[i].trim();
+                if (!id.isEmpty()) recordIds.add(id);
+            }
+
+            if (recordIds.isEmpty()) {
+                return validationError("No valid record IDs provided", t0);
+            }
+
+            Map<String, Object> result = SERVICE.batchTransitionStatus(
+                    tableName, recordIds, targetStatus, reason);
+            result.put("ms", System.currentTimeMillis() - t0);
+            return new ApiResponse(200, result);
+
+        } catch (Exception e) {
+            LogUtil.error(CLASS_NAME, e, "Error in batch action");
+            return databaseError("Batch action failed: " + e.getMessage(), t0);
+        }
+    }
+
+    // ── Confirm for posting (piggyback) ─────────────────────────────────────
+
+    /**
+     * Handles confirm-for-posting via the save query param piggyback.
+     * Parses comma-separated recordIds string, delegates to SERVICE.confirmRecords().
+     */
+    private ApiResponse handleConfirm(String confirmJson) {
+        long t0 = System.currentTimeMillis();
+        String tableName = getTableName();
+
+        try {
+            if (!isBatchOperationsEnabled()) {
+                return configError("Batch operations are disabled. Enable 'enableBatchOperations' in plugin properties.", t0);
+            }
+
+            JSONObject body = new JSONObject(confirmJson);
+
+            String idsStr = body.optString("recordIds", "");
+            if (idsStr.isEmpty()) {
+                return validationError("Missing or empty recordIds", t0);
+            }
+
+            boolean allowPartial = body.optBoolean("allowPartial", false);
+
+            List<String> recordIds = new ArrayList<>();
+            String[] idParts = idsStr.split(",");
+            for (int i = 0; i < idParts.length; i++) {
+                String id = idParts[i].trim();
+                if (!id.isEmpty()) recordIds.add(id);
+            }
+
+            if (recordIds.isEmpty()) {
+                return validationError("No valid record IDs provided", t0);
+            }
+
+            ValidationConfig config = getValidationConfig();
+            Map<String, Object> result = SERVICE.confirmRecords(
+                    tableName, recordIds, allowPartial, config);
+
+            // If confirmed:0 with validation errors, return 400
+            Object confirmedCount = result.get("confirmed");
+            List<?> valErrors = (List<?>) result.get("validationErrors");
+            if (confirmedCount != null && ((Number) confirmedCount).intValue() == 0
+                    && valErrors != null && !valErrors.isEmpty()) {
+                result.put("error", "VALIDATION_FAILED");
+                result.put("message", "Confirmation failed: validation errors");
+                result.put("ms", System.currentTimeMillis() - t0);
+                return new ApiResponse(400, result);
+            }
+
+            result.put("ms", System.currentTimeMillis() - t0);
+            return new ApiResponse(200, result);
+
+        } catch (Exception e) {
+            LogUtil.error(CLASS_NAME, e, "Error confirming records");
+            return databaseError("Confirmation failed: " + e.getMessage(), t0);
         }
     }
 
@@ -912,9 +1429,49 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
                 || "modifiedBy".equals(field);
     }
 
-    private ApiResponse badRequest(String message, long t0) {
+    private ApiResponse validationError(String message, long t0) {
         Map<String, Object> err = new HashMap<>();
-        err.put("error", "BAD_REQUEST");
+        err.put("error", "VALIDATION_ERROR");
+        err.put("message", message);
+        err.put("ms", System.currentTimeMillis() - t0);
+        return new ApiResponse(400, err);
+    }
+
+    private ApiResponse invalidParams(String message, long t0) {
+        Map<String, Object> err = new HashMap<>();
+        err.put("error", "INVALID_PARAMS");
+        err.put("message", message);
+        err.put("ms", System.currentTimeMillis() - t0);
+        return new ApiResponse(400, err);
+    }
+
+    private ApiResponse databaseError(String message, long t0) {
+        Map<String, Object> err = new HashMap<>();
+        err.put("error", "DATABASE_ERROR");
+        err.put("message", message);
+        err.put("ms", System.currentTimeMillis() - t0);
+        return new ApiResponse(500, err);
+    }
+
+    private ApiResponse configError(String message, long t0) {
+        Map<String, Object> err = new HashMap<>();
+        err.put("error", "CONFIG_ERROR");
+        err.put("message", message);
+        err.put("ms", System.currentTimeMillis() - t0);
+        return new ApiResponse(400, err);
+    }
+
+    private ApiResponse validationFailed(String message, long t0) {
+        Map<String, Object> err = new HashMap<>();
+        err.put("error", "VALIDATION_FAILED");
+        err.put("message", message);
+        err.put("ms", System.currentTimeMillis() - t0);
+        return new ApiResponse(400, err);
+    }
+
+    private ApiResponse invalidStatus(String message, long t0) {
+        Map<String, Object> err = new HashMap<>();
+        err.put("error", "INVALID_STATUS");
         err.put("message", message);
         err.put("ms", System.currentTimeMillis() - t0);
         return new ApiResponse(400, err);
@@ -928,12 +1485,16 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
         return new ApiResponse(404, err);
     }
 
-    private ApiResponse internalError(long t0) {
-        Map<String, Object> err = new HashMap<>();
-        err.put("error", "INTERNAL_ERROR");
-        err.put("message", "An unexpected error occurred. Check server logs for details.");
-        err.put("ms", System.currentTimeMillis() - t0);
-        return new ApiResponse(500, err);
+    /** Parse a numeric value from a form field, returning 0.0 for null/empty/non-numeric. */
+    private static double parseDouble(Object val) {
+        if (val == null) return 0.0;
+        String s = val.toString().trim();
+        if (s.isEmpty()) return 0.0;
+        try {
+            return Double.parseDouble(s);
+        } catch (NumberFormatException e) {
+            return 0.0;
+        }
     }
 
     /**

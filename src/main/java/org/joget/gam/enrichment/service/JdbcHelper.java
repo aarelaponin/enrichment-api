@@ -1,5 +1,6 @@
 package org.joget.gam.enrichment.service;
 
+import com.fiscaladmin.gam.framework.status.EntityType;
 import org.joget.apps.app.service.AppUtil;
 
 import javax.sql.DataSource;
@@ -89,7 +90,7 @@ public class JdbcHelper {
 
     /** Updates specific custom field columns on a row. Keys are form element IDs (no c_ prefix). */
     public static void updateColumns(Connection conn, String tableName, String id,
-                                      Map<String, String> fields) throws SQLException {
+                                      Map<String, String> fields, String username) throws SQLException {
         if (fields.isEmpty()) return;
 
         StringBuilder sql = new StringBuilder("UPDATE ");
@@ -101,20 +102,21 @@ public class JdbcHelper {
             sql.append(dbCol(fieldId)).append(" = ?");
             i++;
         }
-        sql.append(", dateModified = NOW() WHERE id = ?");
+        sql.append(", dateModified = NOW(), modifiedBy = ? WHERE id = ?");
 
         try (PreparedStatement ps = conn.prepareStatement(sql.toString())) {
             int idx = 1;
             for (String fieldId : fields.keySet()) {
                 ps.setString(idx++, fields.get(fieldId));
             }
+            ps.setString(idx++, username);
             ps.setString(idx, id);
             ps.executeUpdate();
         }
     }
 
     /** Inserts an audit row into app_fd_audit_log. */
-    public static void insertAudit(Connection conn, String entityType, String entityId,
+    public static void insertAudit(Connection conn, EntityType entityType, String entityId,
                                     String fromStatus, String toStatus,
                                     String triggeredBy, String reason) throws SQLException {
         String sql = "INSERT INTO " + dbTable("audit_log")
@@ -130,7 +132,7 @@ public class JdbcHelper {
 
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, UUID.randomUUID().toString());
-            ps.setString(2, entityType);
+            ps.setString(2, entityType.name());
             ps.setString(3, entityId);
             ps.setString(4, fromStatus);
             ps.setString(5, toStatus);
@@ -143,12 +145,12 @@ public class JdbcHelper {
 
     /**
      * Inserts a new row into a form table. The columns map uses form element IDs (no c_ prefix).
-     * Standard columns (id, dateCreated, dateModified) are set automatically.
+     * Standard columns (id, dateCreated, dateModified, createdBy, modifiedBy) are set automatically.
      */
     public static void insertRow(Connection conn, String tableName, String id,
-                                  Map<String, String> fields) throws SQLException {
-        StringBuilder cols = new StringBuilder("id, dateCreated, dateModified");
-        StringBuilder vals = new StringBuilder("?, NOW(), NOW()");
+                                  Map<String, String> fields, String username) throws SQLException {
+        StringBuilder cols = new StringBuilder("id, dateCreated, dateModified, createdBy, modifiedBy");
+        StringBuilder vals = new StringBuilder("?, NOW(), NOW(), ?, ?");
 
         for (String fieldId : fields.keySet()) {
             cols.append(", ").append(dbCol(fieldId));
@@ -159,7 +161,9 @@ public class JdbcHelper {
 
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, id);
-            int idx = 2;
+            ps.setString(2, username);
+            ps.setString(3, username);
+            int idx = 4;
             for (String fieldId : fields.keySet()) {
                 ps.setString(idx++, fields.get(fieldId));
             }
