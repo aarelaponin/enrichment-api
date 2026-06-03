@@ -19,7 +19,10 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
+import java.text.SimpleDateFormat;
 import java.time.Instant;
+import java.time.LocalDate;
+import java.time.temporal.ChronoUnit;
 import java.util.ArrayList;
 import java.util.EnumSet;
 import java.util.HashMap;
@@ -29,6 +32,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.TreeMap;
 import java.util.UUID;
 import java.util.regex.Pattern;
 
@@ -1054,6 +1058,811 @@ public class EnrichmentService {
         }
     }
 
+    // ── Trade Allocation (D1) ────────────────────────────────────────────
+
+    /**
+     * Allocate a portion of a pooled securities trade to a single customer.
+     * Creates F03.02 lot, upserts F03.01 position, upserts F03.00 portfolio,
+     * updates F01.05 allocation status.
+     */
+    public Map<String, Object> allocateTrade(
+            String enrichmentTable,
+            String enrichmentId,
+            String customerId,
+            BigDecimal quantity,
+            ValidationConfig config) throws Exception {
+
+        ValidationConfig.AllocationConfig ac = config.getAllocation();
+        Connection conn = null;
+        boolean committed = false;
+
+        try {
+            conn = JdbcHelper.getConnection();
+            conn.setAutoCommit(false);
+
+            // === PHASE 1: LOAD & VALIDATE ===
+
+            // V1: Load enrichment record
+            Map<String, String> enrichment = JdbcHelper.loadRowByFieldId(conn, enrichmentTable, enrichmentId);
+            if (enrichment == null) {
+                throw new RecordNotFoundException(enrichmentId);
+            }
+
+            // Row-level lock for concurrency safety
+            String lockSql = "SELECT id FROM " + JdbcHelper.dbTable(enrichmentTable)
+                    + " WHERE id = ? FOR UPDATE";
+            try (PreparedStatement ps = conn.prepareStatement(lockSql)) {
+                ps.setString(1, enrichmentId);
+                ps.executeQuery();
+            }
+
+            // V2: Check internal_type
+            String internalType = enrichment.get(ac.getEnrichmentTypeField());
+            if (!ac.getEligibleTypes().contains(internalType)) {
+                throw new IllegalArgumentException(
+                        "Record type '" + internalType + "' is not eligible for trade allocation");
+            }
+
+            // V3: Check status
+            String status = enrichment.get(ac.getEnrichmentStatusField());
+            if (!ac.getEligibleStatuses().contains(status)) {
+                throw new IllegalArgumentException(
+                        "Record status '" + status + "' is not eligible for allocation");
+            }
+
+            // V4: Check fund_allocation_status
+            String allocStatus = enrichment.get(ac.getEnrichmentAllocStatusField());
+            if ("allocated".equals(allocStatus)) {
+                throw new IllegalStateException("Trade is already fully allocated");
+            }
+
+            // V5: Load secu transaction
+            String sourceRecordId = enrichment.get(ac.getEnrichmentSourceField());
+            if (sourceRecordId == null || sourceRecordId.isEmpty()) {
+                throw new IllegalArgumentException("Enrichment has no linked securities transaction");
+            }
+            Map<String, String> secu = JdbcHelper.loadRowByFieldId(conn, ac.getSecuTable(), sourceRecordId);
+            if (secu == null) {
+                throw new IllegalArgumentException("Securities transaction not found: " + sourceRecordId);
+            }
+            BigDecimal secuQty = parseBigDecimal(secu.get(ac.getSecuQuantityField())).abs();
+            BigDecimal secuPrice = parseBigDecimal(secu.get(ac.getSecuPriceField()));
+            BigDecimal secuFee = parseBigDecimal(secu.get(ac.getSecuFeeField())).abs();
+            String secuCurrency = secu.get(ac.getSecuCurrencyField());
+            String secuTicker = secu.get(ac.getSecuTickerField());
+
+            if (secuQty.compareTo(BigDecimal.ZERO) <= 0) {
+                throw new IllegalArgumentException("Securities transaction has no valid quantity");
+            }
+            if (secuPrice.compareTo(BigDecimal.ZERO) <= 0) {
+                throw new IllegalArgumentException("Securities transaction has no valid price");
+            }
+
+            // V5a: Full pairing gate
+            String pairId = enrichment.get("pair_id");
+            String hasFee = enrichment.get("has_fee");
+            if ("yes".equalsIgnoreCase(hasFee)) {
+                String feeTrxId = enrichment.get("fee_trx_id");
+                if (pairId == null || pairId.isEmpty()
+                        || feeTrxId == null || feeTrxId.isEmpty()) {
+                    throw new IllegalArgumentException(
+                        "Securities transaction requires full pairing (principal + fee) "
+                        + "before allocation. The fee bank transaction has not yet been matched.");
+                }
+            } else {
+                if (pairId == null || pairId.isEmpty()) {
+                    throw new IllegalArgumentException(
+                        "Securities transaction must be paired with bank settlement before allocation.");
+                }
+            }
+
+            // V6: Load and validate customer
+            Map<String, String> customer = JdbcHelper.loadRowByField(conn, ac.getCustomerTable(), "customerId", customerId);
+            if (customer == null) {
+                throw new IllegalArgumentException("Customer not found: " + customerId);
+            }
+            String isFund = customer.get(ac.getCustomerIsFundField());
+            if ("yes".equalsIgnoreCase(isFund)) {
+                throw new IllegalArgumentException("Cannot allocate to fund entity");
+            }
+            String customerName = customer.get(ac.getCustomerDisplayNameField());
+
+            // V7: Quantity must be positive
+            if (quantity.compareTo(BigDecimal.ZERO) <= 0) {
+                throw new IllegalArgumentException("Quantity must be positive");
+            }
+
+            // V8: Check remaining unallocated quantity
+            BigDecimal alreadyAllocated = JdbcHelper.sumColumn(
+                    conn, ac.getLotTable(), "quantity", "sourceEnrichmentId", enrichmentId);
+            BigDecimal remaining = secuQty.subtract(alreadyAllocated);
+            if (quantity.subtract(remaining).doubleValue() > ac.getQuantityTolerance()) {
+                throw new IllegalArgumentException(
+                        "Requested quantity " + quantity + " exceeds remaining " + remaining);
+            }
+
+            // Determine direction
+            boolean isBuy = ac.isBuyType(internalType);
+            boolean isSell = ac.isSellType(internalType);
+            String direction = isBuy ? "BUY" : "SELL";
+
+            // V9: For SELL — check customer has sufficient position
+            String assetId = enrichment.get(ac.getEnrichmentAssetField());
+            Map<String, String> existingPosition = null;
+            if (assetId != null) {
+                existingPosition = JdbcHelper.loadRowByFields(
+                        conn, ac.getPositionTable(), "customerId", customerId, "assetId", assetId);
+            }
+
+            if (isSell) {
+                if (existingPosition == null) {
+                    throw new IllegalArgumentException(
+                            "Customer has no position in this asset — cannot sell");
+                }
+                BigDecimal positionQty = parseBigDecimal(existingPosition.get("quantity"));
+                if (quantity.compareTo(positionQty) > 0) {
+                    throw new IllegalArgumentException(
+                            "Customer has insufficient holdings (" + positionQty + " < " + quantity + ")");
+                }
+            }
+
+            // === PHASE 2: COMPUTE ===
+
+            BigDecimal totalAmount = quantity.multiply(secuPrice).setScale(6, RoundingMode.HALF_UP);
+            BigDecimal feeAmount = secuFee.multiply(quantity).divide(secuQty, 6, RoundingMode.HALF_UP);
+            BigDecimal totalCostWithFees = totalAmount.add(feeAmount).setScale(6, RoundingMode.HALF_UP);
+            String allocationDate = enrichment.get(ac.getEnrichmentTrxDateField());
+            String assetIsin = enrichment.get(ac.getEnrichmentAssetIsinField());
+
+            BigDecimal fxRate = parseBigDecimal(enrichment.get("fx_rate_to_eur"));
+            if (fxRate.compareTo(BigDecimal.ZERO) <= 0) fxRate = BigDecimal.ONE;
+
+            BigDecimal totalAmountEur = totalAmount.multiply(fxRate).setScale(6, RoundingMode.HALF_UP);
+            BigDecimal feeAmountEur = feeAmount.multiply(fxRate).setScale(6, RoundingMode.HALF_UP);
+            BigDecimal totalCostWithFeesEur = totalCostWithFees.multiply(fxRate).setScale(6, RoundingMode.HALF_UP);
+
+            // For SELL: compute cost basis and realized P&L
+            BigDecimal costBasisUsed = BigDecimal.ZERO;
+            BigDecimal realizedPnl = BigDecimal.ZERO;
+            String costBasisMethod = "AVERAGE";
+
+            if (isSell && existingPosition != null) {
+                BigDecimal posTotalCost = parseBigDecimal(existingPosition.get("totalCostBasis"));
+                BigDecimal posQty = parseBigDecimal(existingPosition.get("quantity"));
+                if (posQty.compareTo(BigDecimal.ZERO) > 0) {
+                    BigDecimal avgCost = posTotalCost.divide(posQty, 6, RoundingMode.HALF_UP);
+                    costBasisUsed = avgCost.multiply(quantity).setScale(6, RoundingMode.HALF_UP);
+                    realizedPnl = totalAmount.subtract(costBasisUsed).setScale(6, RoundingMode.HALF_UP);
+                }
+            }
+
+            // Generate IDs
+            String lotId = generateId(ac.getLotIdFormat(), ac.getLotIdEnvVar());
+
+            // === PHASE 3: WRITE (within transaction) ===
+
+            String username = getCurrentUser();
+
+            // Step 1: Resolve/Create F03.01 portfolioPosition
+            boolean positionCreated = false;
+            String positionId;
+
+            if (existingPosition != null) {
+                positionId = existingPosition.get("id");
+            } else if (isBuy) {
+                positionCreated = true;
+                positionId = generateId(ac.getPositionIdFormat(), ac.getPositionIdEnvVar());
+                Map<String, String> posFields = new LinkedHashMap<>();
+                posFields.put("customerId", customerId);
+                posFields.put("customerDisplayName", customerName != null ? customerName : "");
+                posFields.put("assetId", assetId);
+                posFields.put("assetTicker", secuTicker != null ? secuTicker : "");
+                posFields.put("assetIsin", assetIsin != null ? assetIsin : "");
+                posFields.put("quantity", "0");
+                posFields.put("totalCostBasis", "0");
+                posFields.put("totalCostBasisEur", "0");
+                posFields.put("currency", secuCurrency != null ? secuCurrency : "");
+                posFields.put("firstAcquisitionDate", allocationDate != null ? allocationDate : "");
+                posFields.put("lastTransactionDate", allocationDate != null ? allocationDate : "");
+                posFields.put("status", "active");
+                posFields.put("positionId", positionId);
+                JdbcHelper.insertRow(conn, ac.getPositionTable(), positionId, posFields, username);
+
+                existingPosition = JdbcHelper.loadRowByFieldId(conn, ac.getPositionTable(), positionId);
+            } else {
+                throw new IllegalStateException("Cannot create position for SELL");
+            }
+
+            // Step 2: Insert F03.02 allocationLot
+            Map<String, String> lotFields = new LinkedHashMap<>();
+            lotFields.put("sourceEnrichmentId", enrichmentId);
+            lotFields.put("positionId", positionId);
+            lotFields.put("customerId", customerId);
+            lotFields.put("assetId", assetId != null ? assetId : "");
+            lotFields.put("assetTicker", secuTicker != null ? secuTicker : "");
+            lotFields.put("direction", direction);
+            lotFields.put("quantity", quantity.toPlainString());
+            lotFields.put("pricePerUnit", secuPrice.toPlainString());
+            lotFields.put("totalAmount", totalAmount.toPlainString());
+            lotFields.put("feeAmount", feeAmount.toPlainString());
+            lotFields.put("totalCostWithFees", totalCostWithFees.toPlainString());
+            lotFields.put("currency", secuCurrency != null ? secuCurrency : "");
+            lotFields.put("allocationDate", allocationDate != null ? allocationDate : "");
+            lotFields.put("allocationMethod", "MANUAL");
+            lotFields.put("remainingQuantity", isBuy ? quantity.toPlainString() : "0");
+            lotFields.put("costBasisMethod", costBasisMethod);
+            lotFields.put("totalAmountEur", totalAmountEur.toPlainString());
+            lotFields.put("feeAmountEur", feeAmountEur.toPlainString());
+            if (isSell) {
+                BigDecimal costBasisPerUnit = parseBigDecimal(
+                        existingPosition != null ? existingPosition.get("averageCostPerUnit") : "0");
+                lotFields.put("costBasisPerUnit", costBasisPerUnit.toPlainString());
+                lotFields.put("totalCostBasis", costBasisUsed.toPlainString());
+                lotFields.put("realizedPnl", realizedPnl.toPlainString());
+                lotFields.put("realizedPnlEur", realizedPnl.multiply(fxRate).setScale(6, RoundingMode.HALF_UP).toPlainString());
+                lotFields.put("consumedLotIds", "");
+            }
+            lotFields.put("lotId", lotId);
+            JdbcHelper.insertRow(conn, ac.getLotTable(), lotId, lotFields, username);
+
+            // Step 3: Update F03.01 portfolioPosition
+            BigDecimal posQtyBefore = parseBigDecimal(existingPosition.get("quantity"));
+            BigDecimal posCostBefore = parseBigDecimal(existingPosition.get("totalCostBasis"));
+
+            BigDecimal newQty, newCost;
+            String newStatus = "active";
+
+            if (isBuy) {
+                newQty = posQtyBefore.add(quantity);
+                newCost = posCostBefore.add(totalCostWithFees).setScale(6, RoundingMode.HALF_UP);
+            } else {
+                newQty = posQtyBefore.subtract(quantity);
+                newCost = posCostBefore.subtract(costBasisUsed).setScale(6, RoundingMode.HALF_UP);
+                if (newQty.compareTo(BigDecimal.ZERO) <= 0) {
+                    newQty = BigDecimal.ZERO;
+                    newCost = BigDecimal.ZERO;
+                    newStatus = "closed";
+                }
+            }
+
+            BigDecimal avgCostPerUnit = newQty.compareTo(BigDecimal.ZERO) > 0
+                    ? newCost.divide(newQty, 2, RoundingMode.HALF_UP)
+                    : BigDecimal.ZERO;
+
+            Map<String, String> posUpdate = new LinkedHashMap<>();
+            posUpdate.put("quantity", newQty.toPlainString());
+            posUpdate.put("totalCostBasis", newCost.toPlainString());
+
+            BigDecimal posCostEurBefore = parseBigDecimal(existingPosition.get("totalCostBasisEur"));
+            BigDecimal newCostEur;
+            if (isBuy) {
+                newCostEur = posCostEurBefore.add(totalCostWithFeesEur).setScale(6, RoundingMode.HALF_UP);
+            } else {
+                newCostEur = posCostEurBefore.subtract(costBasisUsed.multiply(fxRate).setScale(6, RoundingMode.HALF_UP)).setScale(6, RoundingMode.HALF_UP);
+                if (newQty.compareTo(BigDecimal.ZERO) <= 0) {
+                    newCostEur = BigDecimal.ZERO;
+                }
+            }
+            posUpdate.put("totalCostBasisEur", newCostEur.toPlainString());
+
+            posUpdate.put("lastTransactionDate", allocationDate != null ? allocationDate : "");
+            posUpdate.put("status", newStatus);
+            posUpdate.put("averageCostPerUnit", avgCostPerUnit.toPlainString());
+            JdbcHelper.updateColumns(conn, ac.getPositionTable(), positionId, posUpdate, username);
+
+            // Step 4: Upsert F03.00 customerPortfolio
+            boolean portfolioCreated = false;
+            String portfolioId;
+
+            Map<String, String> existingPortfolio = JdbcHelper.loadRowByField(
+                    conn, ac.getPortfolioTable(), "customerId", customerId);
+
+            if (existingPortfolio == null) {
+                portfolioCreated = true;
+                portfolioId = generateId(ac.getPortfolioIdFormat(), ac.getPortfolioIdEnvVar());
+                Map<String, String> pfFields = new LinkedHashMap<>();
+                pfFields.put("customerId", customerId);
+                pfFields.put("customerDisplayName", customerName != null ? customerName : "");
+                pfFields.put("positionCount", "1");
+                pfFields.put("totalCostBasis", totalCostWithFeesEur.toPlainString());
+                pfFields.put("totalMarketValue", "");
+                pfFields.put("totalUnrealizedPnl", "");
+                pfFields.put("totalRealizedPnl", "0");
+                pfFields.put("currency", "EUR");
+                // snapshotDate / lastRefreshedAt are not columns on customerPortfolio
+                // (the form has no such fields). Joget's built-in dateModified already
+                // records the last update, so we do not write a redundant timestamp.
+                pfFields.put("status", "active");
+                pfFields.put("portfolioId", portfolioId);
+                JdbcHelper.insertRow(conn, ac.getPortfolioTable(), portfolioId, pfFields, username);
+            } else {
+                portfolioId = existingPortfolio.get("id");
+            }
+
+            // Recalculate portfolio aggregates
+            int activePositions = countActivePositions(conn, ac.getPositionTable(), customerId);
+            BigDecimal totalPortfolioCost = sumPositionCostsEur(conn, ac.getPositionTable(), customerId);
+
+            Map<String, String> pfUpdate = new LinkedHashMap<>();
+            pfUpdate.put("positionCount", String.valueOf(activePositions));
+            pfUpdate.put("totalCostBasis", totalPortfolioCost.toPlainString());
+            if (activePositions == 0) {
+                pfUpdate.put("status", "closed");
+            }
+            JdbcHelper.updateColumns(conn, ac.getPortfolioTable(), portfolioId, pfUpdate, username);
+
+            // Step 5: Update F01.05 enrichment record
+            BigDecimal newAllocatedQty = alreadyAllocated.add(quantity);
+            String newAllocStatus;
+            if (newAllocatedQty.subtract(secuQty).abs().doubleValue() <= ac.getQuantityTolerance()) {
+                newAllocStatus = "allocated";
+            } else {
+                newAllocStatus = "partially_allocated";
+            }
+
+            String existingNotes = enrichment.get(ac.getEnrichmentNotesField());
+            String noteAppend = "Allocated " + quantity.toPlainString() + " shares to "
+                    + customerName + " (lot " + lotId + ")";
+            String newNotes = (existingNotes != null && !existingNotes.isEmpty())
+                    ? existingNotes + "\n" + noteAppend : noteAppend;
+
+            Map<String, String> enrichUpdate = new LinkedHashMap<>();
+            enrichUpdate.put(ac.getEnrichmentAllocStatusField(), newAllocStatus);
+            enrichUpdate.put(ac.getEnrichmentNotesField(), newNotes);
+            JdbcHelper.updateColumns(conn, enrichmentTable, enrichmentId, enrichUpdate, username);
+
+            conn.commit();
+            committed = true;
+
+            // === PHASE 4: BUILD RESPONSE ===
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("success", true);
+            result.put("lotId", lotId);
+            result.put("positionId", positionId);
+            result.put("positionCreated", positionCreated);
+            result.put("portfolioId", portfolioId);
+            result.put("portfolioCreated", portfolioCreated);
+            result.put("direction", direction);
+            result.put("quantity", quantity.doubleValue());
+            result.put("totalAmount", totalAmount.doubleValue());
+            result.put("feeAmount", feeAmount.doubleValue());
+            result.put("totalCostWithFees", totalCostWithFees.doubleValue());
+            result.put("currency", secuCurrency);
+            result.put("totalAmountEur", totalAmountEur.doubleValue());
+            result.put("feeAmountEur", feeAmountEur.doubleValue());
+            result.put("totalCostWithFeesEur", totalCostWithFeesEur.doubleValue());
+            result.put("fxRate", fxRate.doubleValue());
+            result.put("allocationStatus", newAllocStatus);
+            result.put("remainingQty", secuQty.subtract(newAllocatedQty).doubleValue());
+            if (isSell) {
+                result.put("costBasisUsed", costBasisUsed.doubleValue());
+                result.put("realizedPnl", realizedPnl.doubleValue());
+                result.put("costBasisMethod", costBasisMethod);
+            }
+            return result;
+
+        } catch (RecordNotFoundException | IllegalArgumentException | IllegalStateException e) {
+            if (conn != null && !committed) {
+                try { conn.rollback(); } catch (SQLException ignored) {}
+            }
+            throw e;
+        } catch (Exception e) {
+            if (conn != null && !committed) {
+                try { conn.rollback(); } catch (SQLException ignored) {}
+            }
+            throw new SQLException("Allocation failed: " + e.getMessage(), e);
+        } finally {
+            if (conn != null) {
+                try { conn.setAutoCommit(true); } catch (SQLException ignored) {}
+            }
+            JdbcHelper.closeQuietly(conn);
+        }
+    }
+
+    // ── Income Allocation (D2) ──────────────────────────────────────────
+
+    /**
+     * Allocate income (dividend/interest) proportionally across customers
+     * based on share-days (quantity held x days held) during the accrual period.
+     *
+     * @param enrichmentTable the enrichment form table name
+     * @param enrichmentId    the enrichment record ID
+     * @param periodStart     accrual period start (yyyy-MM-dd)
+     * @param periodEnd       accrual period end (yyyy-MM-dd)
+     * @param preview         if true, compute allocations without writing
+     * @param config          validation config
+     * @return result map with allocations
+     */
+    public Map<String, Object> allocateIncome(
+            String enrichmentTable, String enrichmentId,
+            String periodStart, String periodEnd,
+            boolean preview,
+            ValidationConfig config) throws Exception {
+
+        ValidationConfig.IncomeAllocationConfig iac = config.getIncomeAllocation();
+        Connection conn = null;
+        boolean committed = false;
+
+        try {
+            conn = JdbcHelper.getConnection();
+            conn.setAutoCommit(false);
+
+            // === PHASE 1: LOAD & VALIDATE ===
+
+            Map<String, String> enrichment = JdbcHelper.loadRowByFieldId(conn, enrichmentTable, enrichmentId);
+            if (enrichment == null) {
+                throw new RecordNotFoundException(enrichmentId);
+            }
+
+            if (!preview) {
+                String lockSql = "SELECT id FROM " + JdbcHelper.dbTable(enrichmentTable)
+                        + " WHERE id = ? FOR UPDATE";
+                try (PreparedStatement ps = conn.prepareStatement(lockSql)) {
+                    ps.setString(1, enrichmentId);
+                    ps.executeQuery();
+                }
+            }
+
+            String internalType = enrichment.get(iac.getEnrichmentTypeField());
+            if (!iac.getEligibleTypes().contains(internalType)) {
+                throw new IllegalArgumentException(
+                        "Record type '" + internalType + "' is not eligible for income allocation");
+            }
+
+            String status = enrichment.get(iac.getEnrichmentStatusField());
+            if (!iac.getEligibleStatuses().contains(status)) {
+                throw new IllegalArgumentException(
+                        "Record status '" + status + "' is not eligible for income allocation");
+            }
+
+            String allocStatus = enrichment.get(iac.getEnrichmentAllocStatusField());
+            if ("allocated".equals(allocStatus)) {
+                throw new IllegalStateException("Income is already allocated");
+            }
+
+            String assetId = enrichment.get(iac.getEnrichmentAssetField());
+            if (assetId == null || assetId.isEmpty()) {
+                throw new IllegalArgumentException("No asset linked to enrichment record");
+            }
+
+            LocalDate pStart = LocalDate.parse(periodStart);
+            LocalDate pEnd = LocalDate.parse(periodEnd);
+            if (!pEnd.isAfter(pStart)) {
+                throw new IllegalArgumentException("Period end must be after period start");
+            }
+
+            BigDecimal totalAmount = parseBigDecimal(enrichment.get(iac.getEnrichmentAmountField()));
+            String currency = enrichment.get(iac.getEnrichmentCurrencyField());
+            BigDecimal fxRate = parseBigDecimal(enrichment.get(iac.getEnrichmentFxRateField()));
+            if (fxRate.compareTo(BigDecimal.ZERO) <= 0) fxRate = BigDecimal.ONE;
+
+            // Resolve asset ticker from lots (use first lot's ticker)
+            String assetTicker = "";
+
+            // === PHASE 2: RECONSTRUCT HOLDINGS ===
+
+            List<Map<String, String>> allLots = JdbcHelper.loadRowsByField(
+                    conn, iac.getLotTable(), iac.getLotAssetIdField(), assetId);
+
+            // Resolve asset ticker from first lot
+            if (!allLots.isEmpty()) {
+                String t = getField(allLots.get(0), iac.getLotAssetTickerField());
+                if (t != null && !t.isEmpty()) assetTicker = t;
+            }
+
+            // Group lots by customerId
+            Map<String, List<Map<String, String>>> lotsByCustomer = new LinkedHashMap<>();
+            for (Map<String, String> lot : allLots) {
+                String cid = getField(lot, iac.getLotCustomerIdField());
+                if (cid != null && !cid.isEmpty()) {
+                    lotsByCustomer.computeIfAbsent(cid, k -> new ArrayList<>()).add(lot);
+                }
+            }
+
+            // Compute share-days per customer
+            Map<String, BigDecimal> customerShareDays = new LinkedHashMap<>();
+            Map<String, Long> customerHoldingDays = new LinkedHashMap<>();
+            Map<String, BigDecimal> customerAvgQty = new LinkedHashMap<>();
+
+            for (Map.Entry<String, List<Map<String, String>>> entry : lotsByCustomer.entrySet()) {
+                String customerId = entry.getKey();
+                List<Map<String, String>> custLots = entry.getValue();
+
+                // Build daily delta map: date -> quantity change
+                TreeMap<LocalDate, BigDecimal> deltas = new TreeMap<>();
+                for (Map<String, String> lot : custLots) {
+                    String dateStr = getField(lot, iac.getLotAllocationDateField());
+                    if (dateStr == null || dateStr.isEmpty()) continue;
+                    LocalDate lotDate = LocalDate.parse(dateStr);
+                    BigDecimal qty = parseBigDecimal(getField(lot, iac.getLotQuantityField()));
+                    String direction = getField(lot, iac.getLotDirectionField());
+                    if ("SELL".equalsIgnoreCase(direction)) {
+                        qty = qty.negate();
+                    }
+                    deltas.merge(lotDate, qty, BigDecimal::add);
+                }
+
+                if (deltas.isEmpty()) continue;
+
+                // Compute position_before: sum of all deltas before periodStart
+                BigDecimal position = BigDecimal.ZERO;
+                for (Map.Entry<LocalDate, BigDecimal> d : deltas.entrySet()) {
+                    if (d.getKey().isBefore(pStart)) {
+                        position = position.add(d.getValue());
+                    }
+                }
+
+                // Walk events within [periodStart, periodEnd], computing share-days
+                BigDecimal shareDays = BigDecimal.ZERO;
+                long holdingDays = 0;
+                LocalDate cursor = pStart;
+
+                // Get events within period
+                TreeMap<LocalDate, BigDecimal> periodDeltas = new TreeMap<>(
+                        deltas.subMap(pStart, true, pEnd, true));
+
+                for (Map.Entry<LocalDate, BigDecimal> event : periodDeltas.entrySet()) {
+                    LocalDate eventDate = event.getKey();
+                    long days = ChronoUnit.DAYS.between(cursor, eventDate);
+                    if (days > 0 && position.compareTo(BigDecimal.ZERO) > 0) {
+                        shareDays = shareDays.add(position.multiply(BigDecimal.valueOf(days)));
+                        holdingDays += days;
+                    }
+                    position = position.add(event.getValue());
+                    cursor = eventDate;
+                }
+
+                // Carry to periodEnd
+                long remainingDays = ChronoUnit.DAYS.between(cursor, pEnd);
+                if (remainingDays > 0 && position.compareTo(BigDecimal.ZERO) > 0) {
+                    shareDays = shareDays.add(position.multiply(BigDecimal.valueOf(remainingDays)));
+                    holdingDays += remainingDays;
+                }
+
+                if (shareDays.compareTo(BigDecimal.ZERO) > 0) {
+                    customerShareDays.put(customerId, shareDays);
+                    customerHoldingDays.put(customerId, holdingDays);
+                    customerAvgQty.put(customerId,
+                            holdingDays > 0
+                                    ? shareDays.divide(BigDecimal.valueOf(holdingDays), 6, RoundingMode.HALF_UP)
+                                    : BigDecimal.ZERO);
+                }
+            }
+
+            if (customerShareDays.isEmpty()) {
+                throw new IllegalArgumentException(
+                        "No holdings found for asset " + assetId + " in period " + periodStart + " to " + periodEnd);
+            }
+
+            // === PHASE 3: COMPUTE ALLOCATIONS ===
+
+            BigDecimal totalShareDays = BigDecimal.ZERO;
+            for (BigDecimal sd : customerShareDays.values()) {
+                totalShareDays = totalShareDays.add(sd);
+            }
+
+            Map<String, BigDecimal> allocPcts = new LinkedHashMap<>();
+            Map<String, BigDecimal> allocAmounts = new LinkedHashMap<>();
+            Map<String, BigDecimal> allocAmountsEur = new LinkedHashMap<>();
+
+            for (Map.Entry<String, BigDecimal> entry : customerShareDays.entrySet()) {
+                BigDecimal pct = entry.getValue().divide(totalShareDays, 6, RoundingMode.HALF_UP);
+                BigDecimal amt = totalAmount.multiply(pct).setScale(6, RoundingMode.HALF_UP);
+                BigDecimal amtEur = amt.multiply(fxRate).setScale(6, RoundingMode.HALF_UP);
+                allocPcts.put(entry.getKey(), pct);
+                allocAmounts.put(entry.getKey(), amt);
+                allocAmountsEur.put(entry.getKey(), amtEur);
+            }
+
+            // Rounding remainder adjustment
+            BigDecimal sumAllocated = BigDecimal.ZERO;
+            for (BigDecimal amt : allocAmounts.values()) {
+                sumAllocated = sumAllocated.add(amt);
+            }
+            BigDecimal remainder = totalAmount.subtract(sumAllocated);
+            if (remainder.compareTo(BigDecimal.ZERO) != 0) {
+                // Add remainder to the customer with the largest allocation
+                String largestCustomer = null;
+                BigDecimal largestAmt = BigDecimal.ZERO;
+                for (Map.Entry<String, BigDecimal> e : allocAmounts.entrySet()) {
+                    if (e.getValue().abs().compareTo(largestAmt.abs()) > 0) {
+                        largestAmt = e.getValue();
+                        largestCustomer = e.getKey();
+                    }
+                }
+                if (largestCustomer != null) {
+                    allocAmounts.put(largestCustomer, largestAmt.add(remainder));
+                    allocAmountsEur.put(largestCustomer,
+                            allocAmounts.get(largestCustomer).multiply(fxRate).setScale(6, RoundingMode.HALF_UP));
+                }
+            }
+
+            // === PHASE 4: WRITE (skipped if preview) ===
+
+            String username = getCurrentUser();
+            String allocationDate = enrichment.get(iac.getEnrichmentTrxDateField());
+            List<Map<String, Object>> allocationsList = new ArrayList<>();
+
+            for (Map.Entry<String, BigDecimal> entry : customerShareDays.entrySet()) {
+                String customerId = entry.getKey();
+                BigDecimal shareDays = entry.getValue();
+
+                // Resolve customer display name
+                String displayName = "";
+                Map<String, String> cust = JdbcHelper.loadRowByField(
+                        conn, iac.getCustomerTable(), "customerId", customerId);
+                if (cust != null) {
+                    String dn = getField(cust, iac.getCustomerDisplayNameField());
+                    if (dn != null) displayName = dn;
+                }
+
+                String generatedId = preview ? "" : generateId(
+                        iac.getIncomeAllocIdFormat(), iac.getIncomeAllocIdEnvVar());
+
+                BigDecimal allocPct = allocPcts.get(customerId);
+                BigDecimal allocAmt = allocAmounts.get(customerId);
+                BigDecimal allocAmtEur = allocAmountsEur.get(customerId);
+
+                if (!preview) {
+                    Map<String, String> iaFields = new LinkedHashMap<>();
+                    iaFields.put("incomeAllocId", generatedId);
+                    iaFields.put("sourceEnrichmentId", enrichmentId);
+                    iaFields.put("customerId", customerId);
+                    iaFields.put("customerDisplayName", displayName);
+                    iaFields.put("assetId", assetId);
+                    iaFields.put("assetTicker", assetTicker);
+                    iaFields.put("currency", currency != null ? currency : "");
+                    iaFields.put("accrualPeriodStart", periodStart);
+                    iaFields.put("accrualPeriodEnd", periodEnd);
+                    iaFields.put("holdingDays", String.valueOf(customerHoldingDays.get(customerId)));
+                    iaFields.put("averageQuantityHeld", customerAvgQty.get(customerId).toPlainString());
+                    iaFields.put("shareDays", shareDays.toPlainString());
+                    iaFields.put("totalShareDays", totalShareDays.toPlainString());
+                    iaFields.put("allocationPercentage", allocPct.toPlainString());
+                    iaFields.put("allocatedAmount", allocAmt.toPlainString());
+                    iaFields.put("allocatedAmountEur", allocAmtEur.toPlainString());
+                    iaFields.put("allocationDate", allocationDate != null ? allocationDate : "");
+                    iaFields.put("status", "allocated");
+
+                    JdbcHelper.insertRow(conn, iac.getIncomeAllocTable(), generatedId, iaFields, username);
+                }
+
+                Map<String, Object> a = new LinkedHashMap<>();
+                a.put("incomeAllocId", generatedId);
+                a.put("customerId", customerId);
+                a.put("customerName", displayName);
+                a.put("shareDays", shareDays.doubleValue());
+                a.put("allocationPct", allocPct.doubleValue());
+                a.put("allocatedAmount", allocAmt.doubleValue());
+                a.put("allocatedAmountEur", allocAmtEur.doubleValue());
+                allocationsList.add(a);
+            }
+
+            if (!preview) {
+                // Update enrichment record
+                String existingNotes = enrichment.get(iac.getEnrichmentNotesField());
+                String noteAppend = "Income allocated to " + customerShareDays.size()
+                        + " customers (share-days: " + totalShareDays.toPlainString() + ")";
+                String newNotes = (existingNotes != null && !existingNotes.isEmpty())
+                        ? existingNotes + "\n" + noteAppend : noteAppend;
+
+                Map<String, String> enrichUpdate = new LinkedHashMap<>();
+                enrichUpdate.put(iac.getEnrichmentAllocStatusField(), "allocated");
+                enrichUpdate.put(iac.getEnrichmentNotesField(), newNotes);
+                JdbcHelper.updateColumns(conn, enrichmentTable, enrichmentId, enrichUpdate, username);
+            }
+
+            conn.commit();
+            committed = true;
+
+            // === PHASE 5: RETURN ===
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("success", true);
+            result.put("enrichmentId", enrichmentId);
+            result.put("asset", assetTicker);
+            result.put("totalAmount", totalAmount.doubleValue());
+            result.put("currency", currency);
+            result.put("accrualPeriodStart", periodStart);
+            result.put("accrualPeriodEnd", periodEnd);
+            result.put("totalShareDays", totalShareDays.doubleValue());
+            result.put("allocations", allocationsList);
+            result.put("allocationStatus", preview ? "preview" : "allocated");
+            return result;
+
+        } catch (RecordNotFoundException | IllegalArgumentException | IllegalStateException e) {
+            if (conn != null && !committed) {
+                try { conn.rollback(); } catch (SQLException ignored) {}
+            }
+            throw e;
+        } catch (Exception e) {
+            if (conn != null && !committed) {
+                try { conn.rollback(); } catch (SQLException ignored) {}
+            }
+            throw new SQLException("Income allocation failed: " + e.getMessage(), e);
+        } finally {
+            if (conn != null) {
+                try { conn.setAutoCommit(true); } catch (SQLException ignored) {}
+            }
+            JdbcHelper.closeQuietly(conn);
+        }
+    }
+
+    /**
+     * Generate a sequential ID using Joget's EnvironmentVariableDao.
+     */
+    String generateId(String format, String envVariable) {
+        try {
+            org.joget.apps.app.dao.EnvironmentVariableDao envDao =
+                (org.joget.apps.app.dao.EnvironmentVariableDao)
+                    AppUtil.getApplicationContext().getBean("environmentVariableDao");
+            org.joget.apps.app.model.AppDefinition appDef = AppUtil.getCurrentAppDefinition();
+            Integer counter = envDao.getIncreasedCounter(envVariable, "value", appDef);
+            int qCount = format.length() - format.replace("?", "").length();
+            String padded = String.format("%0" + qCount + "d", counter);
+            StringBuilder sb = new StringBuilder();
+            int pIdx = 0;
+            for (int i = 0; i < format.length(); i++) {
+                if (format.charAt(i) == '?' && pIdx < padded.length()) {
+                    sb.append(padded.charAt(pIdx++));
+                } else {
+                    sb.append(format.charAt(i));
+                }
+            }
+            return sb.toString();
+        } catch (Exception e) {
+            throw new RuntimeException("ID generation failed for format '" + format
+                + "' (env var: " + envVariable + "): " + e.getMessage(), e);
+        }
+    }
+
+    private int countActivePositions(Connection conn, String positionTable,
+                                      String customerId) throws SQLException {
+        String sql = "SELECT COUNT(*) FROM " + JdbcHelper.dbTable(positionTable)
+                + " WHERE " + JdbcHelper.dbCol("customerId") + " = ?"
+                + " AND " + JdbcHelper.dbCol("status") + " = 'active'";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, customerId);
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getInt(1);
+            }
+        }
+    }
+
+    private BigDecimal sumPositionCosts(Connection conn, String positionTable,
+                                         String customerId) throws SQLException {
+        String sql = "SELECT COALESCE(SUM(CAST("
+                + JdbcHelper.dbCol("totalCostBasis") + " AS DECIMAL(20,6))), 0)"
+                + " FROM " + JdbcHelper.dbTable(positionTable)
+                + " WHERE " + JdbcHelper.dbCol("customerId") + " = ?"
+                + " AND " + JdbcHelper.dbCol("status") + " = 'active'";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, customerId);
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getBigDecimal(1);
+            }
+        }
+    }
+
+    private BigDecimal sumPositionCostsEur(Connection conn, String positionTable,
+                                            String customerId) throws SQLException {
+        String sql = "SELECT COALESCE(SUM(CAST("
+                + JdbcHelper.dbCol("totalCostBasisEur") + " AS DECIMAL(20,6))), 0)"
+                + " FROM " + JdbcHelper.dbTable(positionTable)
+                + " WHERE " + JdbcHelper.dbCol("customerId") + " = ?"
+                + " AND " + JdbcHelper.dbCol("status") + " = 'active'";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, customerId);
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getBigDecimal(1);
+            }
+        }
+    }
+
     // ── Validation helpers ─────────────────────────────────────────────
 
     /**
@@ -1131,6 +1940,15 @@ public class EnrichmentService {
         } catch (NumberFormatException e) {
             return 0;
         }
+    }
+
+    /**
+     * Case-insensitive map get — H2 lowercases column names but production MySQL preserves case.
+     */
+    private static String getField(Map<String, String> row, String fieldName) {
+        String v = row.get(fieldName);
+        if (v != null) return v;
+        return row.get(fieldName.toLowerCase());
     }
 
     private static BigDecimal parseBigDecimal(String value) {

@@ -74,6 +74,10 @@ public final class JdbcTestHelper {
                     + "c_period_locked VARCHAR(10), "
                     + "c_source_tp VARCHAR(50), "
                     + "c_has_fee VARCHAR(10), "
+                    + "c_source_trx_id VARCHAR(255), "
+                    + "c_resolved_asset_id VARCHAR(255), "
+                    + "c_asset_isin VARCHAR(255), "
+                    + "c_fee_trx_id VARCHAR(255), "
                     // H2 DATABASE_TO_LOWER lowercases standard columns (dateCreated→datecreated).
                     // split/merge copies all parent fields then removes camelCase keys,
                     // leaving lowercase keys that get c_ prefix. Add those columns so
@@ -82,6 +86,139 @@ public final class JdbcTestHelper {
                     + "c_datemodified VARCHAR(100), "
                     + "c_createdby VARCHAR(255), "
                     + "c_modifiedby VARCHAR(255)"
+                    + ")");
+
+            // Secu transaction table (F01.04)
+            st.execute("CREATE TABLE IF NOT EXISTS app_fd_secu_total_trx ("
+                    + "id VARCHAR(255) PRIMARY KEY, "
+                    + "dateCreated TIMESTAMP, "
+                    + "dateModified TIMESTAMP, "
+                    + "createdBy VARCHAR(255), "
+                    + "modifiedBy VARCHAR(255), "
+                    + "c_quantity VARCHAR(50), "
+                    + "c_price VARCHAR(50), "
+                    + "c_fee VARCHAR(50), "
+                    + "c_amount VARCHAR(50), "
+                    + "c_ticker VARCHAR(50), "
+                    + "c_currency VARCHAR(10), "
+                    + "c_enrichment_id VARCHAR(255)"
+                    + ")");
+
+            // Customer table (F10.01)
+            st.execute("CREATE TABLE IF NOT EXISTS app_fd_customer ("
+                    + "id VARCHAR(255) PRIMARY KEY, "
+                    + "dateCreated TIMESTAMP, "
+                    + "dateModified TIMESTAMP, "
+                    + "createdBy VARCHAR(255), "
+                    + "modifiedBy VARCHAR(255), "
+                    + "c_customerId VARCHAR(255), "
+                    + "c_displayName VARCHAR(255), "
+                    + "c_is_fund VARCHAR(10)"
+                    + ")");
+
+            // Allocation lot table (F03.02)
+            st.execute("CREATE TABLE IF NOT EXISTS app_fd_allocationLot ("
+                    + "id VARCHAR(255) PRIMARY KEY, "
+                    + "dateCreated TIMESTAMP, "
+                    + "dateModified TIMESTAMP, "
+                    + "createdBy VARCHAR(255), "
+                    + "modifiedBy VARCHAR(255), "
+                    + "c_sourceEnrichmentId VARCHAR(255), "
+                    + "c_positionId VARCHAR(255), "
+                    + "c_customerId VARCHAR(255), "
+                    + "c_customerDisplayName VARCHAR(255), "
+                    + "c_assetId VARCHAR(255), "
+                    + "c_assetTicker VARCHAR(50), "
+                    + "c_direction VARCHAR(10), "
+                    + "c_quantity VARCHAR(50), "
+                    + "c_pricePerUnit VARCHAR(50), "
+                    + "c_totalAmount VARCHAR(50), "
+                    + "c_feeAmount VARCHAR(50), "
+                    + "c_totalCostWithFees VARCHAR(50), "
+                    + "c_currency VARCHAR(10), "
+                    + "c_allocationDate VARCHAR(50), "
+                    + "c_allocationMethod VARCHAR(50), "
+                    + "c_remainingQuantity VARCHAR(50), "
+                    + "c_costBasisMethod VARCHAR(50), "
+                    + "c_totalAmountEur VARCHAR(50), "
+                    + "c_feeAmountEur VARCHAR(50), "
+                    + "c_costBasisPerUnit VARCHAR(50), "
+                    + "c_totalCostBasis VARCHAR(50), "
+                    + "c_realizedPnl VARCHAR(50), "
+                    + "c_realizedPnlEur VARCHAR(50), "
+                    + "c_consumedLotIds VARCHAR(1000), "
+                    + "c_lotId VARCHAR(255)"
+                    + ")");
+
+            // Portfolio position table (F03.01)
+            st.execute("CREATE TABLE IF NOT EXISTS app_fd_portfolioPosition ("
+                    + "id VARCHAR(255) PRIMARY KEY, "
+                    + "dateCreated TIMESTAMP, "
+                    + "dateModified TIMESTAMP, "
+                    + "createdBy VARCHAR(255), "
+                    + "modifiedBy VARCHAR(255), "
+                    + "c_customerId VARCHAR(255), "
+                    + "c_customerDisplayName VARCHAR(255), "
+                    + "c_assetId VARCHAR(255), "
+                    + "c_assetTicker VARCHAR(50), "
+                    + "c_assetIsin VARCHAR(50), "
+                    + "c_quantity VARCHAR(50), "
+                    + "c_totalCostBasis VARCHAR(50), "
+                    + "c_totalCostBasisEur VARCHAR(50), "
+                    + "c_averageCostPerUnit VARCHAR(50), "
+                    + "c_currency VARCHAR(10), "
+                    + "c_firstAcquisitionDate VARCHAR(50), "
+                    + "c_lastTransactionDate VARCHAR(50), "
+                    + "c_status VARCHAR(50), "
+                    + "c_positionId VARCHAR(255)"
+                    + ")");
+
+            // Customer portfolio table (F03.00)
+            st.execute("CREATE TABLE IF NOT EXISTS app_fd_customerPortfolio ("
+                    + "id VARCHAR(255) PRIMARY KEY, "
+                    + "dateCreated TIMESTAMP, "
+                    + "dateModified TIMESTAMP, "
+                    + "createdBy VARCHAR(255), "
+                    + "modifiedBy VARCHAR(255), "
+                    + "c_customerId VARCHAR(255), "
+                    + "c_customerDisplayName VARCHAR(255), "
+                    + "c_positionCount VARCHAR(10), "
+                    + "c_totalCostBasis VARCHAR(50), "
+                    + "c_totalMarketValue VARCHAR(50), "
+                    + "c_totalUnrealizedPnl VARCHAR(50), "
+                    + "c_totalRealizedPnl VARCHAR(50), "
+                    + "c_currency VARCHAR(10), "
+                    + "c_snapshotDate VARCHAR(50), "
+                    + "c_lastRefreshedAt VARCHAR(50), "
+                    + "c_status VARCHAR(50), "
+                    + "c_portfolioId VARCHAR(255)"
+                    + ")");
+
+            // Income allocation table (F03.03)
+            st.execute("CREATE TABLE IF NOT EXISTS app_fd_incomeAllocation ("
+                    + "id VARCHAR(255) PRIMARY KEY, "
+                    + "dateCreated TIMESTAMP, "
+                    + "dateModified TIMESTAMP, "
+                    + "createdBy VARCHAR(255), "
+                    + "modifiedBy VARCHAR(255), "
+                    + "c_incomeAllocId VARCHAR(255), "
+                    + "c_sourceEnrichmentId VARCHAR(255), "
+                    + "c_customerId VARCHAR(255), "
+                    + "c_customerDisplayName VARCHAR(255), "
+                    + "c_assetId VARCHAR(255), "
+                    + "c_assetTicker VARCHAR(50), "
+                    + "c_currency VARCHAR(10), "
+                    + "c_accrualPeriodStart VARCHAR(50), "
+                    + "c_accrualPeriodEnd VARCHAR(50), "
+                    + "c_holdingDays VARCHAR(50), "
+                    + "c_averageQuantityHeld VARCHAR(50), "
+                    + "c_shareDays VARCHAR(50), "
+                    + "c_totalShareDays VARCHAR(50), "
+                    + "c_allocationPercentage VARCHAR(50), "
+                    + "c_allocatedAmount VARCHAR(50), "
+                    + "c_allocatedAmountEur VARCHAR(50), "
+                    + "c_allocationDate VARCHAR(50), "
+                    + "c_status VARCHAR(50)"
                     + ")");
 
             st.execute("CREATE TABLE IF NOT EXISTS app_fd_audit_log ("
@@ -209,6 +346,71 @@ public final class JdbcTestHelper {
                 + "  \"statusField\": \"status\""
                 + "}"
                 + "}");
+    }
+
+    /**
+     * Inserts a row into a named table. Keys are field IDs (no c_ prefix).
+     */
+    public static void insertRow(Connection conn, String table, String id,
+                                  Map<String, String> fields) throws SQLException {
+        StringBuilder cols = new StringBuilder("id, dateCreated, dateModified");
+        StringBuilder vals = new StringBuilder("?, NOW(), NOW()");
+
+        for (String fieldId : fields.keySet()) {
+            cols.append(", c_").append(fieldId);
+            vals.append(", ?");
+        }
+
+        String sql = "INSERT INTO app_fd_" + table + " (" + cols + ") VALUES (" + vals + ")";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, id);
+            int idx = 2;
+            for (String fieldId : fields.keySet()) {
+                ps.setString(idx++, fields.get(fieldId));
+            }
+            ps.executeUpdate();
+        }
+    }
+
+    /**
+     * Reads a row from a named table, returns lowercase column names.
+     */
+    public static Map<String, String> readRowFrom(Connection conn, String table,
+                                                    String id) throws SQLException {
+        String sql = "SELECT * FROM app_fd_" + table + " WHERE id = ?";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, id);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return null;
+                Map<String, String> row = new HashMap<>();
+                ResultSetMetaData meta = rs.getMetaData();
+                for (int i = 1; i <= meta.getColumnCount(); i++) {
+                    row.put(meta.getColumnName(i).toLowerCase(), rs.getString(i));
+                }
+                return row;
+            }
+        }
+    }
+
+    /**
+     * Returns a ValidationConfig with allocation section populated using defaults.
+     */
+    public static ValidationConfig allocationConfig() {
+        return ValidationConfig.parse("{"
+                + "\"baseCurrency\": \"EUR\","
+                + "\"requiredFields\": [],"
+                + "\"allocation\": {}"
+                + "}");
+    }
+
+    /**
+     * Returns a ValidationConfig with incomeAllocation section populated using defaults.
+     */
+    public static ValidationConfig incomeAllocationConfig() {
+        return ValidationConfig.parse("{\"baseCurrency\":\"EUR\","
+                + "\"requiredFields\":[],"
+                + "\"allocation\":{},"
+                + "\"incomeAllocation\":{}}");
     }
 
     /**

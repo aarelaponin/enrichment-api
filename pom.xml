@@ -15,6 +15,10 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <maven.compiler.source>17</maven.compiler.source>
         <maven.compiler.target>17</maven.compiler.target>
+        <maven.build.timestamp.format>yyyyMMdd-HHmmss</maven.build.timestamp.format>
+        <!-- Indirection: ${maven.build.timestamp} does NOT filter into resources
+             directly, so expose it under our own property name for build-info.properties. -->
+        <buildTimestamp>${maven.build.timestamp}</buildTimestamp>
     </properties>
 
     <repositories>
@@ -32,6 +36,24 @@
     </repositories>
 
     <build>
+        <resources>
+            <!-- Filter ONLY build-info.properties so ${buildTimestamp} is substituted
+                 at build time; everything else (e.g. plugin properties JSON) verbatim. -->
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>true</filtering>
+                <includes>
+                    <include>build-info.properties</include>
+                </includes>
+            </resource>
+            <resource>
+                <directory>src/main/resources</directory>
+                <filtering>false</filtering>
+                <excludes>
+                    <exclude>build-info.properties</exclude>
+                </excludes>
+            </resource>
+        </resources>
         <plugins>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -136,9 +158,12 @@
             <scope>test</scope>
         </dependency>
         <dependency>
+            <!-- Mockito 5.x: inline mock maker is the default in mockito-core, and
+                 its bundled byte-buddy can instrument JDK 21 classes (e.g. DataSource).
+                 mockito-inline 4.11 failed on JDK 21 with "Could not modify all classes". -->
             <groupId>org.mockito</groupId>
-            <artifactId>mockito-inline</artifactId>
-            <version>4.11.0</version>
+            <artifactId>mockito-core</artifactId>
+            <version>5.14.2</version>
             <scope>test</scope>
         </dependency>
         <dependency>

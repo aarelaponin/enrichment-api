@@ -4,14 +4,19 @@ import com.fiscaladmin.gam.framework.status.EntityType;
 import org.joget.apps.app.service.AppUtil;
 
 import javax.sql.DataSource;
+import java.math.BigDecimal;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import java.util.UUID;
 
 /**
@@ -76,7 +81,7 @@ public class JdbcHelper {
         Map<String, String> raw = loadRow(conn, tableName, id);
         if (raw == null) return null;
 
-        Map<String, String> result = new HashMap<>();
+        Map<String, String> result = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
         for (Map.Entry<String, String> entry : raw.entrySet()) {
             String col = entry.getKey();
             if (col.startsWith(COL_PREFIX)) {
@@ -178,6 +183,126 @@ public class JdbcHelper {
         try (PreparedStatement ps = conn.prepareStatement(sql)) {
             ps.setString(1, id);
             ps.executeUpdate();
+        }
+    }
+
+    /**
+     * Converts a ResultSet row to a Map with field IDs (c_ prefix stripped).
+     */
+    private static Map<String, String> extractRow(ResultSet rs) throws SQLException {
+        ResultSetMetaData meta = rs.getMetaData();
+        // Case-insensitive keys: Postgres reports column names in lowercase
+        // (c_customerid), but callers look up camelCase form element ids
+        // (customerId). A case-insensitive map makes both resolve.
+        Map<String, String> row = new TreeMap<>(String.CASE_INSENSITIVE_ORDER);
+        for (int i = 1; i <= meta.getColumnCount(); i++) {
+            String col = meta.getColumnName(i);
+            String key = col.startsWith(COL_PREFIX) ? col.substring(COL_PREFIX.length()) : col;
+            row.put(key, rs.getString(i));
+        }
+        return row;
+    }
+
+    /**
+     * Loads a single row matching field = value.
+     * Returns null if no match. Throws if multiple matches.
+     * Keys in result are field IDs (c_ prefix stripped).
+     */
+    public static Map<String, String> loadRowByField(Connection conn, String tableName,
+                                                      String fieldId, String fieldValue) throws SQLException {
+        String sql = "SELECT * FROM " + dbTable(tableName)
+                + " WHERE " + dbCol(fieldId) + " = ? LIMIT 2";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, fieldValue);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return null;
+                Map<String, String> row = extractRow(rs);
+                if (rs.next()) {
+                    throw new SQLException("Multiple rows found in " + tableName
+                            + " for " + fieldId + "=" + fieldValue);
+                }
+                return row;
+            }
+        }
+    }
+
+    /**
+     * Loads a single row matching two field conditions.
+     * Returns null if no match. Keys are field IDs (c_ prefix stripped).
+     */
+    public static Map<String, String> loadRowByFields(Connection conn, String tableName,
+                                                       String field1, String value1,
+                                                       String field2, String value2) throws SQLException {
+        String sql = "SELECT * FROM " + dbTable(tableName)
+                + " WHERE " + dbCol(field1) + " = ?"
+                + " AND " + dbCol(field2) + " = ? LIMIT 2";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, value1);
+            ps.setString(2, value2);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (!rs.next()) return null;
+                Map<String, String> row = extractRow(rs);
+                if (rs.next()) {
+                    throw new SQLException("Multiple rows found in " + tableName
+                            + " for " + field1 + "=" + value1 + ", " + field2 + "=" + value2);
+                }
+                return row;
+            }
+        }
+    }
+
+    /**
+     * Loads all rows matching field = value.
+     * Returns empty list if no matches. Keys are field IDs (c_ prefix stripped).
+     */
+    public static List<Map<String, String>> loadRowsByField(Connection conn, String tableName,
+                                                             String fieldId, String fieldValue) throws SQLException {
+        String sql = "SELECT * FROM " + dbTable(tableName)
+                + " WHERE " + dbCol(fieldId) + " = ?";
+        List<Map<String, String>> rows = new ArrayList<>();
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, fieldValue);
+            try (ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    rows.add(extractRow(rs));
+                }
+            }
+        }
+        return rows;
+    }
+
+    /**
+     * Sum a numeric column with WHERE clause.
+     * Returns BigDecimal.ZERO if no matching rows.
+     */
+    public static BigDecimal sumColumn(Connection conn, String tableName,
+                                        String sumFieldId, String whereFieldId,
+                                        String whereValue) throws SQLException {
+        String sql = "SELECT COALESCE(SUM(CAST(" + dbCol(sumFieldId) + " AS DECIMAL(20,6))), 0)"
+                + " FROM " + dbTable(tableName)
+                + " WHERE " + dbCol(whereFieldId) + " = ?";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, whereValue);
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getBigDecimal(1);
+            }
+        }
+    }
+
+    /**
+     * Count rows matching a WHERE condition.
+     */
+    public static int countRows(Connection conn, String tableName,
+                                 String whereFieldId, String whereValue) throws SQLException {
+        String sql = "SELECT COUNT(*) FROM " + dbTable(tableName)
+                + " WHERE " + dbCol(whereFieldId) + " = ?";
+        try (PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, whereValue);
+            try (ResultSet rs = ps.executeQuery()) {
+                rs.next();
+                return rs.getInt(1);
+            }
         }
     }
 
