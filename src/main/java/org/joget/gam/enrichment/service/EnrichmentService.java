@@ -1061,6 +1061,47 @@ public class EnrichmentService {
     // ── Trade Allocation (D1) ────────────────────────────────────────────
 
     /**
+     * Split a total quantity across customers in proportion to a basis — capital share for a
+     * BUY (new lots), current holdings for a SELL (you can only sell what you hold). Uses
+     * largest-remainder rounding to {@code scale} so the parts sum exactly to {@code total};
+     * only positive-basis customers are included and the remainder goes to the largest-basis
+     * customer (deterministic, tie-broken by customer id). Pure function — no database — so it
+     * is unit-tested directly and the DB orchestration around it stays thin.
+     */
+    static java.util.LinkedHashMap<String, BigDecimal> splitByShare(
+            java.util.LinkedHashMap<String, BigDecimal> basisByCustomer, BigDecimal total, int scale) {
+        java.util.LinkedHashMap<String, BigDecimal> out = new java.util.LinkedHashMap<>();
+        if (total == null || total.signum() <= 0) return out;
+        BigDecimal sum = BigDecimal.ZERO;
+        for (BigDecimal b : basisByCustomer.values()) {
+            if (b != null && b.signum() > 0) sum = sum.add(b);
+        }
+        if (sum.signum() <= 0) return out;
+        BigDecimal scaledTotal = total.setScale(scale, RoundingMode.HALF_UP);
+        BigDecimal allocated = BigDecimal.ZERO;
+        String largest = null;
+        BigDecimal largestBasis = BigDecimal.valueOf(-1);
+        for (Map.Entry<String, BigDecimal> e : basisByCustomer.entrySet()) {
+            BigDecimal b = e.getValue();
+            if (b == null || b.signum() <= 0) continue;
+            BigDecimal share = b.divide(sum, 12, RoundingMode.HALF_UP);
+            BigDecimal q = scaledTotal.multiply(share).setScale(scale, RoundingMode.HALF_UP);
+            out.put(e.getKey(), q);
+            allocated = allocated.add(q);
+            if (b.compareTo(largestBasis) > 0
+                    || (b.compareTo(largestBasis) == 0 && (largest == null || e.getKey().compareTo(largest) < 0))) {
+                largestBasis = b;
+                largest = e.getKey();
+            }
+        }
+        BigDecimal remainder = scaledTotal.subtract(allocated);
+        if (remainder.signum() != 0 && largest != null) {
+            out.put(largest, out.get(largest).add(remainder));
+        }
+        return out;
+    }
+
+    /**
      * Allocate a portion of a pooled securities trade to a single customer.
      * Creates F03.02 lot, upserts F03.01 position, upserts F03.00 portfolio,
      * updates F01.05 allocation status.
@@ -1303,7 +1344,9 @@ public class EnrichmentService {
                 lotFields.put("consumedLotIds", "");
             }
             lotFields.put("lotId", lotId);
-            JdbcHelper.insertRow(conn, ac.getLotTable(), lotId, lotFields, username);
+            // The lot is persisted through Joget's FormDataDao AFTER the commit below (not via
+            // raw JDBC here): form data written outside Joget is NOT returned by FormDataDao
+            // reads, so a raw-JDBC lot is invisible to the GL journalizer. See post-commit write.
 
             // Step 3: Update F03.01 portfolioPosition
             BigDecimal posQtyBefore = parseBigDecimal(existingPosition.get("quantity"));
@@ -1414,6 +1457,20 @@ public class EnrichmentService {
             conn.commit();
             committed = true;
 
+            // Persist the allocation lot through Joget's FormDataDao (platform-native write) so it
+            // is immediately visible to every FormDataDao reader — including the GL journalizer.
+            // Written post-commit: the positionId it references is already durable, and the lot is
+            // the only allocation record a Joget reader consumes (positions/portfolio are read back
+            // through this same service).
+            FormRow lotRow = new FormRow();
+            lotRow.setId(lotId);
+            for (Map.Entry<String, String> lf : lotFields.entrySet()) {
+                lotRow.setProperty(lf.getKey(), lf.getValue());
+            }
+            FormRowSet lotSet = new FormRowSet();
+            lotSet.add(lotRow);
+            getDao().saveOrUpdate(null, ac.getLotTable(), lotSet);
+
             // === PHASE 4: BUILD RESPONSE ===
 
             Map<String, Object> result = new LinkedHashMap<>();
@@ -1458,6 +1515,206 @@ public class EnrichmentService {
             }
             JdbcHelper.closeQuietly(conn);
         }
+    }
+
+    /**
+     * Automatically allocate a whole pooled trade across investors — BUY by capital share (as of
+     * the trade date), SELL by current holdings (you can only sell what you hold) — by computing
+     * each investor's quantity and reusing {@link #allocateTrade} per investor, so all lot /
+     * position / cost-basis mechanics are shared (single source of truth). The manual modal stays
+     * the audited override. Returns a summary; no-product / no-capital / no-holders are reported,
+     * not silently dropped.
+     */
+    public Map<String, Object> autoAllocateTrade(String enrichmentTable, String enrichmentId,
+                                                 ValidationConfig config) throws Exception {
+        ValidationConfig.AllocationConfig ac = config.getAllocation();
+        ValidationConfig.CapitalAllocationConfig cc = config.getCapitalAllocation();
+
+        String direction = "";
+        java.util.LinkedHashMap<String, BigDecimal> shares = null;
+        Connection conn = null;
+        try {
+            conn = JdbcHelper.getConnection();
+            Map<String, String> en = JdbcHelper.loadRowByFieldId(conn, enrichmentTable, enrichmentId);
+            if (en == null) throw new RecordNotFoundException(enrichmentId);
+
+            String internalType = en.get(ac.getEnrichmentTypeField());
+            if (!ac.getEligibleTypes().contains(internalType)) {
+                throw new IllegalArgumentException("Record type '" + internalType + "' is not eligible for allocation");
+            }
+            String status = en.get(ac.getEnrichmentStatusField());
+            if (!ac.getEligibleStatuses().contains(status)) {
+                throw new IllegalArgumentException("Record status '" + status + "' is not eligible for allocation");
+            }
+            boolean isSell = ac.isSellType(internalType);
+            direction = isSell ? "SELL" : "BUY";
+
+            if ("allocated".equals(en.get(ac.getEnrichmentAllocStatusField()))) {
+                return autoSummary(enrichmentId, "already_allocated", direction, 0, java.util.Collections.emptyMap());
+            }
+
+            String assetId = en.get(ac.getEnrichmentAssetField());
+            String tradeDate = en.get(ac.getEnrichmentTrxDateField());
+
+            String sourceId = en.get(ac.getEnrichmentSourceField());
+            if (sourceId == null || sourceId.isEmpty()) throw new IllegalArgumentException("Enrichment has no linked securities transaction");
+            Map<String, String> secu = JdbcHelper.loadRowByFieldId(conn, ac.getSecuTable(), sourceId);
+            if (secu == null) throw new IllegalArgumentException("Securities transaction not found: " + sourceId);
+            BigDecimal secuQty = parseBigDecimal(secu.get(ac.getSecuQuantityField())).abs();
+            BigDecimal already = JdbcHelper.sumColumn(conn, ac.getLotTable(), "quantity", "sourceEnrichmentId", enrichmentId);
+            BigDecimal remaining = secuQty.subtract(already);
+            if (remaining.signum() <= 0) {
+                return autoSummary(enrichmentId, "nothing_remaining", direction, 0, java.util.Collections.emptyMap());
+            }
+
+            java.util.LinkedHashMap<String, BigDecimal> basis = isSell
+                    ? holdingsBasis(conn, ac, assetId)
+                    : capitalBasis(conn, cc, tradeDate);
+            shares = splitByShare(basis, remaining, cc.getShareScale());
+            if (shares.isEmpty()) {
+                return autoSummary(enrichmentId, isSell ? "no_holders" : "no_capital_basis", direction, 0, java.util.Collections.emptyMap());
+            }
+        } finally {
+            JdbcHelper.closeQuietly(conn);
+        }
+
+        // allocateTrade opens its own transaction; loop after closing the read connection.
+        int allocated = 0;
+        Map<String, Object> perCustomer = new LinkedHashMap<>();
+        for (Map.Entry<String, BigDecimal> e : shares.entrySet()) {
+            BigDecimal qty = e.getValue();
+            if (qty == null || qty.signum() <= 0) continue;
+            try {
+                allocateTrade(enrichmentTable, enrichmentId, e.getKey(), qty, config);
+                perCustomer.put(e.getKey(), qty.toPlainString());
+                allocated++;
+            } catch (Exception ex) {
+                perCustomer.put(e.getKey(), "ERROR: " + ex.getMessage());
+            }
+        }
+        return autoSummary(enrichmentId, allocated > 0 ? "allocated" : "failed", direction, allocated, perCustomer);
+    }
+
+    private static Map<String, Object> autoSummary(String enrichmentId, String outcome, String direction,
+                                                   int allocated, Map<String, Object> perCustomer) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("enrichmentId", enrichmentId);
+        m.put("outcome", outcome);
+        m.put("direction", direction);
+        m.put("investorsAllocated", allocated);
+        m.put("perCustomer", perCustomer);
+        return m;
+    }
+
+    /** Auto-allocate every eligible, not-yet-allocated trade. Returns an aggregate summary. */
+    public Map<String, Object> autoAllocateAllTrades(String enrichmentTable, ValidationConfig config) throws Exception {
+        ValidationConfig.AllocationConfig ac = config.getAllocation();
+        List<String> ids = new ArrayList<>();
+        Connection conn = null;
+        try {
+            conn = JdbcHelper.getConnection();
+            String sql = "SELECT id, " + JdbcHelper.dbCol(ac.getEnrichmentTypeField()) + " AS xtype, "
+                    + JdbcHelper.dbCol(ac.getEnrichmentStatusField()) + " AS xstatus, "
+                    + JdbcHelper.dbCol(ac.getEnrichmentAllocStatusField()) + " AS xalloc "
+                    + "FROM " + JdbcHelper.dbTable(enrichmentTable);
+            try (java.sql.PreparedStatement ps = conn.prepareStatement(sql);
+                 java.sql.ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    String t = rs.getString("xtype");
+                    String s = rs.getString("xstatus");
+                    String a = rs.getString("xalloc");
+                    if (ac.getEligibleTypes().contains(t) && ac.getEligibleStatuses().contains(s)
+                            && !"allocated".equals(a)) {
+                        ids.add(rs.getString("id"));
+                    }
+                }
+            }
+        } finally {
+            JdbcHelper.closeQuietly(conn);
+        }
+
+        int tradesAllocated = 0, lotsCreated = 0;
+        List<Map<String, Object>> details = new ArrayList<>();
+        for (String id : ids) {
+            Map<String, Object> r = autoAllocateTrade(enrichmentTable, id, config);
+            details.add(r);
+            Object n = r.get("investorsAllocated");
+            if (n instanceof Integer && (Integer) n > 0) { tradesAllocated++; lotsCreated += (Integer) n; }
+        }
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("tradesScanned", ids.size());
+        summary.put("tradesAllocated", tradesAllocated);
+        summary.put("lotsCreated", lotsCreated);
+        summary.put("details", details);
+        return summary;
+    }
+
+    /** Capital basis: each active investor's capital contributions (deposits) up to {@code asOf}. */
+    private java.util.LinkedHashMap<String, BigDecimal> capitalBasis(Connection conn,
+            ValidationConfig.CapitalAllocationConfig cc, String asOf) throws SQLException {
+        java.util.LinkedHashMap<String, BigDecimal> basis = new java.util.LinkedHashMap<>();
+        // Resolve the single active investment product; if 0 or >1, return empty (caller reports).
+        List<Map<String, String>> products = JdbcHelper.loadRowsByField(conn, cc.getProductTable(),
+                cc.getProductBusinessLineField(), cc.getInvestmentBusinessLineValue());
+        String productId = null;
+        for (Map<String, String> p : products) {
+            if (cc.getActiveStatusValue().equalsIgnoreCase(caNz(p.get(cc.getProductStatusField())))) {
+                String pid = caNz(p.get(cc.getProductIdField()));
+                if (pid.isEmpty()) continue;
+                if (productId == null) productId = pid;
+                else if (!productId.equals(pid)) return new java.util.LinkedHashMap<>(); // ambiguous
+            }
+        }
+        if (productId == null) return basis;
+
+        List<Map<String, String>> holdings = JdbcHelper.loadRowsByField(conn, cc.getHoldingTable(),
+                cc.getHoldingProductField(), productId);
+        for (Map<String, String> h : holdings) {
+            if (!cc.getInvestorRoleValue().equalsIgnoreCase(caNz(h.get(cc.getHoldingRoleField())))) continue;
+            if (!cc.getActiveStatusValue().equalsIgnoreCase(caNz(h.get(cc.getHoldingStatusField())))) continue;
+            if (!caOnOrBefore(caNz(h.get(cc.getHoldingEffectiveFromField())), asOf)) continue;
+            String cust = caNz(h.get(cc.getHoldingCustomerField()));
+            if (cust.isEmpty()) continue;
+            BigDecimal cap = capitalAsOf(conn, cc, cust, asOf);
+            if (cap.signum() > 0) basis.put(cust, cap);
+        }
+        return basis;
+    }
+
+    private BigDecimal capitalAsOf(Connection conn, ValidationConfig.CapitalAllocationConfig cc,
+                                   String customerId, String asOf) throws SQLException {
+        BigDecimal sum = BigDecimal.ZERO;
+        List<Map<String, String>> deposits = JdbcHelper.loadRowsByField(conn, cc.getDepositTable(),
+                cc.getDepositCustomerField(), customerId);
+        for (Map<String, String> d : deposits) {
+            if (caOnOrBefore(caNz(d.get(cc.getDepositValueDateField())), asOf)) {
+                sum = sum.add(parseBigDecimal(d.get(cc.getDepositAmountField())));
+            }
+        }
+        return sum;
+    }
+
+    /** Holdings basis: each customer's current position quantity in the asset (SELL allocation). */
+    private java.util.LinkedHashMap<String, BigDecimal> holdingsBasis(Connection conn,
+            ValidationConfig.AllocationConfig ac, String assetId) throws SQLException {
+        java.util.LinkedHashMap<String, BigDecimal> basis = new java.util.LinkedHashMap<>();
+        if (assetId == null || assetId.isEmpty()) return basis;
+        List<Map<String, String>> positions = JdbcHelper.loadRowsByField(conn, ac.getPositionTable(), "assetId", assetId);
+        for (Map<String, String> p : positions) {
+            String cust = caNz(p.get("customerId"));
+            if (cust.isEmpty()) continue;
+            BigDecimal qty = parseBigDecimal(p.get("quantity"));
+            if (qty.signum() > 0) basis.merge(cust, qty, BigDecimal::add);
+        }
+        return basis;
+    }
+
+    private static String caNz(String s) { return s == null ? "" : s.trim(); }
+
+    private static boolean caOnOrBefore(String a, String b) {
+        if (a == null || a.isEmpty()) return true;
+        if (b == null || b.isEmpty()) return true;
+        return a.compareTo(b) <= 0;
     }
 
     // ── Income Allocation (D2) ──────────────────────────────────────────

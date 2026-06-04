@@ -32,6 +32,7 @@ public class ValidationConfig {
     private final ConfirmationConfig confirmation;
     private final AllocationConfig allocation;
     private final IncomeAllocationConfig incomeAllocation;
+    private final CapitalAllocationConfig capitalAllocation;
 
     private ValidationConfig(String baseCurrency,
                              List<String> requiredFields,
@@ -41,7 +42,8 @@ public class ValidationConfig {
                              SplitMergeConfig splitMerge,
                              ConfirmationConfig confirmation,
                              AllocationConfig allocation,
-                             IncomeAllocationConfig incomeAllocation) {
+                             IncomeAllocationConfig incomeAllocation,
+                             CapitalAllocationConfig capitalAllocation) {
         this.baseCurrency = baseCurrency;
         this.requiredFields = Collections.unmodifiableList(requiredFields);
         this.conditionalRequirements = Collections.unmodifiableList(conditionalRequirements);
@@ -51,6 +53,7 @@ public class ValidationConfig {
         this.confirmation = confirmation;
         this.allocation = allocation;
         this.incomeAllocation = incomeAllocation;
+        this.capitalAllocation = capitalAllocation;
     }
 
     /**
@@ -127,8 +130,15 @@ public class ValidationConfig {
                 ia = IncomeAllocationConfig.parse(iaObj);
             }
 
+            // capitalAllocation (automatic trade allocation — product/holding/deposit sources)
+            CapitalAllocationConfig ca = null;
+            JSONObject caObj = root.optJSONObject("capitalAllocation");
+            if (caObj != null) {
+                ca = CapitalAllocationConfig.parse(caObj);
+            }
+
             return new ValidationConfig(baseCurrency, requiredFields, condReqs,
-                    overrides, recon, sm, conf, alloc, ia);
+                    overrides, recon, sm, conf, alloc, ia, ca);
 
         } catch (Exception e) {
             LogUtil.warn(CLASS_NAME, "Failed to parse validationConfig: " + e.getMessage());
@@ -138,7 +148,7 @@ public class ValidationConfig {
 
     private static ValidationConfig empty() {
         return new ValidationConfig("EUR", Collections.emptyList(),
-                Collections.emptyList(), null, null, null, null, null, null);
+                Collections.emptyList(), null, null, null, null, null, null, null);
     }
 
     public String getBaseCurrency() { return baseCurrency; }
@@ -154,8 +164,90 @@ public class ValidationConfig {
     public IncomeAllocationConfig getIncomeAllocation() {
         return incomeAllocation != null ? incomeAllocation : IncomeAllocationConfig.defaults();
     }
+    public CapitalAllocationConfig getCapitalAllocation() {
+        return capitalAllocation != null ? capitalAllocation : CapitalAllocationConfig.defaults();
+    }
 
     // ── Inner classes ──────────────────────────────────────────────────
+
+    /**
+     * Sources for capital-share trade allocation (D-4): the product registry, customer-product
+     * holdings, and capital deposits. Defaults match the F04 master-data forms; overridable via
+     * the "capitalAllocation" JSON section so table/field names stay in configuration, not code.
+     */
+    public static class CapitalAllocationConfig {
+        private final String productTable, productIdField, productBusinessLineField, productStatusField;
+        private final String investmentBusinessLineValue;
+        private final String holdingTable, holdingCustomerField, holdingProductField, holdingRoleField, holdingStatusField, holdingEffectiveFromField;
+        private final String investorRoleValue, activeStatusValue;
+        private final String depositTable, depositCustomerField, depositAmountField, depositValueDateField;
+        private final int shareScale;
+
+        private CapitalAllocationConfig(String productTable, String productIdField, String productBusinessLineField,
+                String productStatusField, String investmentBusinessLineValue, String holdingTable,
+                String holdingCustomerField, String holdingProductField, String holdingRoleField, String holdingStatusField,
+                String holdingEffectiveFromField, String investorRoleValue, String activeStatusValue, String depositTable,
+                String depositCustomerField, String depositAmountField, String depositValueDateField, int shareScale) {
+            this.productTable = productTable; this.productIdField = productIdField;
+            this.productBusinessLineField = productBusinessLineField; this.productStatusField = productStatusField;
+            this.investmentBusinessLineValue = investmentBusinessLineValue; this.holdingTable = holdingTable;
+            this.holdingCustomerField = holdingCustomerField; this.holdingProductField = holdingProductField;
+            this.holdingRoleField = holdingRoleField; this.holdingStatusField = holdingStatusField;
+            this.holdingEffectiveFromField = holdingEffectiveFromField; this.investorRoleValue = investorRoleValue;
+            this.activeStatusValue = activeStatusValue; this.depositTable = depositTable;
+            this.depositCustomerField = depositCustomerField; this.depositAmountField = depositAmountField;
+            this.depositValueDateField = depositValueDateField; this.shareScale = shareScale;
+        }
+
+        public static CapitalAllocationConfig defaults() {
+            return new CapitalAllocationConfig(
+                    "product", "productId", "businessLine", "status", "Investment",
+                    "customerProductHolding", "customerId", "productId", "role", "status", "effectiveFrom",
+                    "Investor", "Active",
+                    "customer_deposit", "customerId", "amount", "valueDate", 0);
+        }
+
+        static CapitalAllocationConfig parse(JSONObject o) {
+            return new CapitalAllocationConfig(
+                    o.optString("productTable", "product"),
+                    o.optString("productIdField", "productId"),
+                    o.optString("productBusinessLineField", "businessLine"),
+                    o.optString("productStatusField", "status"),
+                    o.optString("investmentBusinessLineValue", "Investment"),
+                    o.optString("holdingTable", "customerProductHolding"),
+                    o.optString("holdingCustomerField", "customerId"),
+                    o.optString("holdingProductField", "productId"),
+                    o.optString("holdingRoleField", "role"),
+                    o.optString("holdingStatusField", "status"),
+                    o.optString("holdingEffectiveFromField", "effectiveFrom"),
+                    o.optString("investorRoleValue", "Investor"),
+                    o.optString("activeStatusValue", "Active"),
+                    o.optString("depositTable", "customer_deposit"),
+                    o.optString("depositCustomerField", "customerId"),
+                    o.optString("depositAmountField", "amount"),
+                    o.optString("depositValueDateField", "valueDate"),
+                    o.optInt("shareScale", 0));
+        }
+
+        public String getProductTable() { return productTable; }
+        public String getProductIdField() { return productIdField; }
+        public String getProductBusinessLineField() { return productBusinessLineField; }
+        public String getProductStatusField() { return productStatusField; }
+        public String getInvestmentBusinessLineValue() { return investmentBusinessLineValue; }
+        public String getHoldingTable() { return holdingTable; }
+        public String getHoldingCustomerField() { return holdingCustomerField; }
+        public String getHoldingProductField() { return holdingProductField; }
+        public String getHoldingRoleField() { return holdingRoleField; }
+        public String getHoldingStatusField() { return holdingStatusField; }
+        public String getHoldingEffectiveFromField() { return holdingEffectiveFromField; }
+        public String getInvestorRoleValue() { return investorRoleValue; }
+        public String getActiveStatusValue() { return activeStatusValue; }
+        public String getDepositTable() { return depositTable; }
+        public String getDepositCustomerField() { return depositCustomerField; }
+        public String getDepositAmountField() { return depositAmountField; }
+        public String getDepositValueDateField() { return depositValueDateField; }
+        public int getShareScale() { return shareScale; }
+    }
 
     public static class ConditionalRequirement {
         private final String conditionField;

@@ -1029,6 +1029,13 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
             if (peek.has("allocateTrade") && peek.has("enrichmentId") && peek.has("customerId")) {
                 return handleAllocateTrade(json);
             }
+            // === Automatic Trade Allocation (D4) — capital share (BUY) / holdings (SELL) ===
+            if (peek.has("autoAllocateTrades")) {
+                return handleAutoAllocateTrades(json);
+            }
+            if (peek.has("autoAllocateTrade") && peek.has("enrichmentId")) {
+                return handleAutoAllocateTrade(json);
+            }
             if (peek.has("secuTransaction") && peek.has("enrichmentId")) {
                 return handleGetSecuTransaction(json);
             }
@@ -1550,6 +1557,49 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
         } catch (Throwable t) {
             LogUtil.error(CLASS_NAME, new RuntimeException(t), "allocateTrade failed (" + t.getClass().getName() + ")");
             return databaseError("Allocation failed (system): " + t.getMessage(), t0);
+        }
+    }
+
+    // ── Automatic Trade Allocation handlers (D4) ───────────────────────────
+
+    /** Auto-allocate every eligible, not-yet-allocated trade by capital share / holdings. */
+    private ApiResponse handleAutoAllocateTrades(String json) {
+        long t0 = System.currentTimeMillis();
+        try {
+            ValidationConfig config = getValidationConfig();
+            Map<String, Object> result = SERVICE.autoAllocateAllTrades(getTableName(), config);
+            result.put("ms", System.currentTimeMillis() - t0);
+            return new ApiResponse(200, result);
+        } catch (Exception e) {
+            LogUtil.error(CLASS_NAME, e, "autoAllocateTrades failed");
+            return databaseError("Auto-allocation failed: " + e.getMessage(), t0);
+        } catch (Throwable t) {
+            LogUtil.error(CLASS_NAME, new RuntimeException(t), "autoAllocateTrades failed (" + t.getClass().getName() + ")");
+            return databaseError("Auto-allocation failed (system): " + t.getMessage(), t0);
+        }
+    }
+
+    /** Auto-allocate one trade by capital share (BUY) / holdings (SELL). */
+    private ApiResponse handleAutoAllocateTrade(String json) {
+        long t0 = System.currentTimeMillis();
+        try {
+            JSONObject req = new JSONObject(json);
+            String enrichmentId = req.getString("enrichmentId");
+            ValidationConfig config = getValidationConfig();
+            Map<String, Object> result = SERVICE.autoAllocateTrade(getTableName(), enrichmentId, config);
+            result.put("ms", System.currentTimeMillis() - t0);
+            return new ApiResponse(200, result);
+        } catch (RecordNotFoundException e) {
+            return notFound(e.getMessage(), t0);
+        } catch (IllegalArgumentException | IllegalStateException e) {
+            LogUtil.warn(CLASS_NAME, "autoAllocateTrade validation: " + e.getMessage());
+            return validationFailed(e.getMessage(), t0);
+        } catch (Exception e) {
+            LogUtil.error(CLASS_NAME, e, "autoAllocateTrade failed");
+            return databaseError("Auto-allocation failed: " + e.getMessage(), t0);
+        } catch (Throwable t) {
+            LogUtil.error(CLASS_NAME, new RuntimeException(t), "autoAllocateTrade failed (" + t.getClass().getName() + ")");
+            return databaseError("Auto-allocation failed (system): " + t.getMessage(), t0);
         }
     }
 

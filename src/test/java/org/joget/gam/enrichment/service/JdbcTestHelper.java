@@ -1,5 +1,8 @@
 package org.joget.gam.enrichment.service;
 
+import org.joget.apps.form.model.FormRow;
+import org.joget.apps.form.model.FormRowSet;
+
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -221,6 +224,29 @@ public final class JdbcTestHelper {
                     + "c_status VARCHAR(50)"
                     + ")");
 
+            // Product registry (F04.01)
+            st.execute("CREATE TABLE IF NOT EXISTS app_fd_product ("
+                    + "id VARCHAR(255) PRIMARY KEY, dateCreated TIMESTAMP, dateModified TIMESTAMP, "
+                    + "createdBy VARCHAR(255), modifiedBy VARCHAR(255), "
+                    + "c_productId VARCHAR(255), c_name VARCHAR(255), c_businessLine VARCHAR(50), "
+                    + "c_baseCurrency VARCHAR(10), c_status VARCHAR(50), "
+                    + "c_effectiveFrom VARCHAR(50), c_effectiveTo VARCHAR(50))");
+
+            // Customer-product holdings (F04.04)
+            st.execute("CREATE TABLE IF NOT EXISTS app_fd_customerProductHolding ("
+                    + "id VARCHAR(255) PRIMARY KEY, dateCreated TIMESTAMP, dateModified TIMESTAMP, "
+                    + "createdBy VARCHAR(255), modifiedBy VARCHAR(255), "
+                    + "c_holdingId VARCHAR(255), c_customerId VARCHAR(255), c_productId VARCHAR(255), "
+                    + "c_role VARCHAR(50), c_businessLine VARCHAR(50), c_status VARCHAR(50), "
+                    + "c_effectiveFrom VARCHAR(50), c_effectiveTo VARCHAR(50))");
+
+            // Customer capital deposits (customerDeposit form, table customer_deposit)
+            st.execute("CREATE TABLE IF NOT EXISTS app_fd_customer_deposit ("
+                    + "id VARCHAR(255) PRIMARY KEY, dateCreated TIMESTAMP, dateModified TIMESTAMP, "
+                    + "createdBy VARCHAR(255), modifiedBy VARCHAR(255), "
+                    + "c_depositId VARCHAR(255), c_customerId VARCHAR(255), c_amount VARCHAR(50), "
+                    + "c_currency VARCHAR(10), c_valueDate VARCHAR(50), c_status VARCHAR(50))");
+
             st.execute("CREATE TABLE IF NOT EXISTS app_fd_audit_log ("
                     + "id VARCHAR(255) PRIMARY KEY, "
                     + "dateCreated TIMESTAMP, "
@@ -411,6 +437,37 @@ public final class JdbcTestHelper {
                 + "\"requiredFields\":[],"
                 + "\"allocation\":{},"
                 + "\"incomeAllocation\":{}}");
+    }
+
+    /**
+     * Writes FormRows to the H2 table (upsert by id), mapping each property to a c_ column. Lets a
+     * mocked FormDataDao.saveOrUpdate land real rows in H2 so tests still assert via readRowFrom —
+     * mirrors how Joget persists form data, which is the path production now uses for lots.
+     */
+    public static void saveFormRows(Connection conn, String table, FormRowSet rows) throws SQLException {
+        if (rows == null) return;
+        for (FormRow r : rows) {
+            String id = r.getId();
+            try (PreparedStatement ps = conn.prepareStatement("DELETE FROM app_fd_" + table + " WHERE id = ?")) {
+                ps.setString(1, id);
+                ps.executeUpdate();
+            }
+            List<String> names = new ArrayList<>();
+            for (Object k : r.keySet()) {
+                String key = String.valueOf(k);
+                if (!"id".equalsIgnoreCase(key)) names.add(key);
+            }
+            StringBuilder cols = new StringBuilder("id, dateCreated, dateModified");
+            StringBuilder vals = new StringBuilder("?, NOW(), NOW()");
+            for (String n : names) { cols.append(", c_").append(n); vals.append(", ?"); }
+            String sql = "INSERT INTO app_fd_" + table + " (" + cols + ") VALUES (" + vals + ")";
+            try (PreparedStatement ps = conn.prepareStatement(sql)) {
+                ps.setString(1, id);
+                int idx = 2;
+                for (String n : names) { ps.setString(idx++, r.getProperty(n)); }
+                ps.executeUpdate();
+            }
+        }
     }
 
     /**

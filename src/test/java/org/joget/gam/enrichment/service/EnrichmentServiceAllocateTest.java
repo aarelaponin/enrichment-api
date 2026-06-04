@@ -53,6 +53,12 @@ public class EnrichmentServiceAllocateTest {
         when(mockWum.getCurrentUsername()).thenReturn("analyst01");
 
         FormDataDao mockDao = mock(FormDataDao.class);
+        // allocateTrade now persists the lot through FormDataDao (platform-native write); route
+        // that into the same H2 tables the tests assert against via readRowFrom.
+        doAnswer(inv -> {
+            JdbcTestHelper.saveFormRows(keepAliveConn, inv.getArgument(1), inv.getArgument(2));
+            return null;
+        }).when(mockDao).saveOrUpdate(any(), any(), any());
 
         ApplicationContext mockCtx = mock(ApplicationContext.class);
         when(mockCtx.getBean("setupDataSource")).thenReturn(mockDs);
