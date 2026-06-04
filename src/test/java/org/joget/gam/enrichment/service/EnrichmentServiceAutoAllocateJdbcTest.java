@@ -133,6 +133,13 @@ public class EnrichmentServiceAutoAllocateJdbcTest {
         }
     }
 
+    private String lotMethod(String enrId) throws Exception {
+        try (Statement st = keepAliveConn.createStatement();
+             ResultSet rs = st.executeQuery("SELECT c_allocationMethod FROM app_fd_allocationLot WHERE c_sourceEnrichmentId='" + enrId + "' LIMIT 1")) {
+            return rs.next() ? rs.getString(1) : null;
+        }
+    }
+
     @Test
     public void buyAllocatesByCapitalShare() throws Exception {
         product();
@@ -146,6 +153,25 @@ public class EnrichmentServiceAutoAllocateJdbcTest {
         assertEquals(2, r.get("investorsAllocated"));
         assertEquals(0, new BigDecimal("60").compareTo(positionQty("A")));
         assertEquals(0, new BigDecimal("40").compareTo(positionQty("B")));
+        assertEquals("AUTO_CAPITAL_SHARE", lotMethod("ENR-BUY"));
+    }
+
+    @Test
+    public void skipsTradeWithNoAsset() throws Exception {
+        product();
+        investorWithCapital("A", "6000");
+        insertEnrichmentRow(keepAliveConn, "ENR-NA", fields(
+                "status", "paired", "internal_type", "SEC_BUY", "source_trx_id", "SECU-NA",
+                "resolved_asset_id", "", "transaction_date", "2024-06-01",
+                "pair_id", "P1", "has_fee", "no", "fund_allocation_status", "", "processing_notes", ""));
+        insertRow(keepAliveConn, "secu_total_trx", "SECU-NA", fields(
+                "quantity", "100", "price", "10", "fee", "0", "amount", "1000",
+                "ticker", "X", "currency", "EUR", "enrichment_id", "ENR-NA"));
+
+        Map<String, Object> r = service.autoAllocateTrade(TABLE, "ENR-NA", config);
+
+        assertEquals("no_asset", r.get("outcome"));
+        assertEquals(0, r.get("investorsAllocated"));
     }
 
     @Test

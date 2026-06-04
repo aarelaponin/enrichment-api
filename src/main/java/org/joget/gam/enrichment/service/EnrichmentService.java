@@ -1102,9 +1102,7 @@ public class EnrichmentService {
     }
 
     /**
-     * Allocate a portion of a pooled securities trade to a single customer.
-     * Creates F03.02 lot, upserts F03.01 position, upserts F03.00 portfolio,
-     * updates F01.05 allocation status.
+     * Manual allocation (the directed override) — records allocationMethod=MANUAL.
      */
     public Map<String, Object> allocateTrade(
             String enrichmentTable,
@@ -1112,6 +1110,23 @@ public class EnrichmentService {
             String customerId,
             BigDecimal quantity,
             ValidationConfig config) throws Exception {
+        return allocateTrade(enrichmentTable, enrichmentId, customerId, quantity, config, "MANUAL");
+    }
+
+    /**
+     * Allocate a portion of a pooled securities trade to a single customer.
+     * Creates F03.02 lot, upserts F03.01 position, upserts F03.00 portfolio,
+     * updates F01.05 allocation status. The lot is tagged with {@code allocationMethod}
+     * (MANUAL for the directed override, AUTO_CAPITAL_SHARE for the automatic path) so the
+     * audit trail distinguishes how each lot was created.
+     */
+    public Map<String, Object> allocateTrade(
+            String enrichmentTable,
+            String enrichmentId,
+            String customerId,
+            BigDecimal quantity,
+            ValidationConfig config,
+            String allocationMethod) throws Exception {
 
         ValidationConfig.AllocationConfig ac = config.getAllocation();
         Connection conn = null;
@@ -1329,7 +1344,7 @@ public class EnrichmentService {
             lotFields.put("totalCostWithFees", totalCostWithFees.toPlainString());
             lotFields.put("currency", secuCurrency != null ? secuCurrency : "");
             lotFields.put("allocationDate", allocationDate != null ? allocationDate : "");
-            lotFields.put("allocationMethod", "MANUAL");
+            lotFields.put("allocationMethod", allocationMethod == null || allocationMethod.isEmpty() ? "MANUAL" : allocationMethod);
             lotFields.put("remainingQuantity", isBuy ? quantity.toPlainString() : "0");
             lotFields.put("costBasisMethod", costBasisMethod);
             lotFields.put("totalAmountEur", totalAmountEur.toPlainString());
@@ -1556,6 +1571,12 @@ public class EnrichmentService {
             String assetId = en.get(ac.getEnrichmentAssetField());
             String tradeDate = en.get(ac.getEnrichmentTrxDateField());
 
+            // A securities allocation must have an asset. Asset-less rows (e.g. SEC_* cash /
+            // settlement legs) are reported, not turned into asset-less lots.
+            if (assetId == null || assetId.trim().isEmpty()) {
+                return autoSummary(enrichmentId, "no_asset", direction, 0, java.util.Collections.emptyMap());
+            }
+
             String sourceId = en.get(ac.getEnrichmentSourceField());
             if (sourceId == null || sourceId.isEmpty()) throw new IllegalArgumentException("Enrichment has no linked securities transaction");
             Map<String, String> secu = JdbcHelper.loadRowByFieldId(conn, ac.getSecuTable(), sourceId);
@@ -1585,7 +1606,7 @@ public class EnrichmentService {
             BigDecimal qty = e.getValue();
             if (qty == null || qty.signum() <= 0) continue;
             try {
-                allocateTrade(enrichmentTable, enrichmentId, e.getKey(), qty, config);
+                allocateTrade(enrichmentTable, enrichmentId, e.getKey(), qty, config, "AUTO_CAPITAL_SHARE");
                 perCustomer.put(e.getKey(), qty.toPlainString());
                 allocated++;
             } catch (Exception ex) {
