@@ -5,10 +5,13 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 /**
  * Immutable configuration parsed from the validationConfig plugin property JSON.
@@ -27,6 +30,8 @@ public class ValidationConfig {
     private final ReconciliationConfig reconciliation;
     private final SplitMergeConfig splitMerge;
     private final ConfirmationConfig confirmation;
+    private final AllocationConfig allocation;
+    private final IncomeAllocationConfig incomeAllocation;
 
     private ValidationConfig(String baseCurrency,
                              List<String> requiredFields,
@@ -34,7 +39,9 @@ public class ValidationConfig {
                              JSONArray confidenceOverrides,
                              ReconciliationConfig reconciliation,
                              SplitMergeConfig splitMerge,
-                             ConfirmationConfig confirmation) {
+                             ConfirmationConfig confirmation,
+                             AllocationConfig allocation,
+                             IncomeAllocationConfig incomeAllocation) {
         this.baseCurrency = baseCurrency;
         this.requiredFields = Collections.unmodifiableList(requiredFields);
         this.conditionalRequirements = Collections.unmodifiableList(conditionalRequirements);
@@ -42,6 +49,8 @@ public class ValidationConfig {
         this.reconciliation = reconciliation;
         this.splitMerge = splitMerge;
         this.confirmation = confirmation;
+        this.allocation = allocation;
+        this.incomeAllocation = incomeAllocation;
     }
 
     /**
@@ -104,8 +113,22 @@ public class ValidationConfig {
                 conf = ConfirmationConfig.parse(confObj);
             }
 
+            // allocation
+            AllocationConfig alloc = null;
+            JSONObject allocObj = root.optJSONObject("allocation");
+            if (allocObj != null) {
+                alloc = AllocationConfig.parse(allocObj);
+            }
+
+            // incomeAllocation
+            IncomeAllocationConfig ia = null;
+            JSONObject iaObj = root.optJSONObject("incomeAllocation");
+            if (iaObj != null) {
+                ia = IncomeAllocationConfig.parse(iaObj);
+            }
+
             return new ValidationConfig(baseCurrency, requiredFields, condReqs,
-                    overrides, recon, sm, conf);
+                    overrides, recon, sm, conf, alloc, ia);
 
         } catch (Exception e) {
             LogUtil.warn(CLASS_NAME, "Failed to parse validationConfig: " + e.getMessage());
@@ -115,7 +138,7 @@ public class ValidationConfig {
 
     private static ValidationConfig empty() {
         return new ValidationConfig("EUR", Collections.emptyList(),
-                Collections.emptyList(), null, null, null, null);
+                Collections.emptyList(), null, null, null, null, null, null);
     }
 
     public String getBaseCurrency() { return baseCurrency; }
@@ -125,6 +148,12 @@ public class ValidationConfig {
     public ReconciliationConfig getReconciliation() { return reconciliation; }
     public SplitMergeConfig getSplitMerge() { return splitMerge; }
     public ConfirmationConfig getConfirmation() { return confirmation; }
+    public AllocationConfig getAllocation() {
+        return allocation != null ? allocation : AllocationConfig.defaults();
+    }
+    public IncomeAllocationConfig getIncomeAllocation() {
+        return incomeAllocation != null ? incomeAllocation : IncomeAllocationConfig.defaults();
+    }
 
     // ── Inner classes ──────────────────────────────────────────────────
 
@@ -385,5 +414,347 @@ public class ValidationConfig {
 
         public String getConfirmedByField() { return confirmedByField; }
         public String getConfirmedAtField() { return confirmedAtField; }
+    }
+
+    public static class AllocationConfig {
+        // Table names
+        private final String secuTable;
+        private final String lotTable;
+        private final String positionTable;
+        private final String portfolioTable;
+        private final String customerTable;
+        private final String costBasisTable;
+
+        // Enrichment field mappings
+        private final String enrichmentSourceField;
+        private final String enrichmentAssetField;
+        private final String enrichmentAssetIsinField;
+        private final String enrichmentTypeField;
+        private final String enrichmentStatusField;
+        private final String enrichmentAllocStatusField;
+        private final String enrichmentNotesField;
+        private final String enrichmentTrxDateField;
+
+        // Secu transaction field mappings
+        private final String secuQuantityField;
+        private final String secuPriceField;
+        private final String secuFeeField;
+        private final String secuAmountField;
+        private final String secuTickerField;
+        private final String secuCurrencyField;
+        private final String secuEnrichmentLinkField;
+
+        // Customer field mappings
+        private final String customerDisplayNameField;
+        private final String customerIsFundField;
+
+        // Eligible types and statuses
+        private final Set<String> eligibleTypes;
+        private final Set<String> eligibleStatuses;
+
+        // Tolerance
+        private final double quantityTolerance;
+
+        // ID generation
+        private final String lotIdFormat;
+        private final String lotIdEnvVar;
+        private final String positionIdFormat;
+        private final String positionIdEnvVar;
+        private final String portfolioIdFormat;
+        private final String portfolioIdEnvVar;
+
+        private AllocationConfig(String secuTable, String lotTable, String positionTable,
+                                 String portfolioTable, String customerTable, String costBasisTable,
+                                 String enrichmentSourceField, String enrichmentAssetField,
+                                 String enrichmentAssetIsinField, String enrichmentTypeField,
+                                 String enrichmentStatusField, String enrichmentAllocStatusField,
+                                 String enrichmentNotesField, String enrichmentTrxDateField,
+                                 String secuQuantityField, String secuPriceField,
+                                 String secuFeeField, String secuAmountField,
+                                 String secuTickerField, String secuCurrencyField,
+                                 String secuEnrichmentLinkField,
+                                 String customerDisplayNameField, String customerIsFundField,
+                                 Set<String> eligibleTypes, Set<String> eligibleStatuses,
+                                 double quantityTolerance,
+                                 String lotIdFormat, String lotIdEnvVar,
+                                 String positionIdFormat, String positionIdEnvVar,
+                                 String portfolioIdFormat, String portfolioIdEnvVar) {
+            this.secuTable = secuTable;
+            this.lotTable = lotTable;
+            this.positionTable = positionTable;
+            this.portfolioTable = portfolioTable;
+            this.customerTable = customerTable;
+            this.costBasisTable = costBasisTable;
+            this.enrichmentSourceField = enrichmentSourceField;
+            this.enrichmentAssetField = enrichmentAssetField;
+            this.enrichmentAssetIsinField = enrichmentAssetIsinField;
+            this.enrichmentTypeField = enrichmentTypeField;
+            this.enrichmentStatusField = enrichmentStatusField;
+            this.enrichmentAllocStatusField = enrichmentAllocStatusField;
+            this.enrichmentNotesField = enrichmentNotesField;
+            this.enrichmentTrxDateField = enrichmentTrxDateField;
+            this.secuQuantityField = secuQuantityField;
+            this.secuPriceField = secuPriceField;
+            this.secuFeeField = secuFeeField;
+            this.secuAmountField = secuAmountField;
+            this.secuTickerField = secuTickerField;
+            this.secuCurrencyField = secuCurrencyField;
+            this.secuEnrichmentLinkField = secuEnrichmentLinkField;
+            this.customerDisplayNameField = customerDisplayNameField;
+            this.customerIsFundField = customerIsFundField;
+            this.eligibleTypes = Collections.unmodifiableSet(eligibleTypes);
+            this.eligibleStatuses = Collections.unmodifiableSet(eligibleStatuses);
+            this.quantityTolerance = quantityTolerance;
+            this.lotIdFormat = lotIdFormat;
+            this.lotIdEnvVar = lotIdEnvVar;
+            this.positionIdFormat = positionIdFormat;
+            this.positionIdEnvVar = positionIdEnvVar;
+            this.portfolioIdFormat = portfolioIdFormat;
+            this.portfolioIdEnvVar = portfolioIdEnvVar;
+        }
+
+        public static AllocationConfig defaults() {
+            return new AllocationConfig(
+                    "secu_total_trx", "allocationLot", "portfolioPosition",
+                    "customerPortfolio", "customer", "costBasisConfig",
+                    "source_trx_id", "resolved_asset_id", "asset_isin",
+                    "internal_type", "status", "fund_allocation_status",
+                    "processing_notes", "transaction_date",
+                    "quantity", "price", "fee", "amount", "ticker", "currency", "enrichment_id",
+                    "displayName", "is_fund",
+                    new HashSet<>(Arrays.asList("EQ_BUY", "EQ_SELL", "BOND_BUY", "BOND_SELL", "SEC_BUY", "SEC_SELL")),
+                    new HashSet<>(Arrays.asList("enriched", "in_review", "adjusted", "ready", "paired")),
+                    0.000001,
+                    "LOT-??????", "allocationLotCounter",
+                    "PP-??????", "portfolioPositionCounter",
+                    "CPF-??????", "customerPortfolioCounter"
+            );
+        }
+
+        static AllocationConfig parse(JSONObject obj) {
+            Set<String> types = parseStringSet(obj.optJSONArray("eligibleTypes"),
+                    new HashSet<>(Arrays.asList("EQ_BUY", "EQ_SELL", "BOND_BUY", "BOND_SELL", "SEC_BUY", "SEC_SELL")));
+            Set<String> statuses = parseStringSet(obj.optJSONArray("eligibleStatuses"),
+                    new HashSet<>(Arrays.asList("enriched", "in_review", "adjusted", "ready", "paired")));
+
+            return new AllocationConfig(
+                    obj.optString("secuTable", "secu_total_trx"),
+                    obj.optString("lotTable", "allocationLot"),
+                    obj.optString("positionTable", "portfolioPosition"),
+                    obj.optString("portfolioTable", "customerPortfolio"),
+                    obj.optString("customerTable", "customer"),
+                    obj.optString("costBasisTable", "costBasisConfig"),
+                    obj.optString("enrichmentSourceField", "source_trx_id"),
+                    obj.optString("enrichmentAssetField", "resolved_asset_id"),
+                    obj.optString("enrichmentAssetIsinField", "asset_isin"),
+                    obj.optString("enrichmentTypeField", "internal_type"),
+                    obj.optString("enrichmentStatusField", "status"),
+                    obj.optString("enrichmentAllocStatusField", "fund_allocation_status"),
+                    obj.optString("enrichmentNotesField", "processing_notes"),
+                    obj.optString("enrichmentTrxDateField", "transaction_date"),
+                    obj.optString("secuQuantityField", "quantity"),
+                    obj.optString("secuPriceField", "price"),
+                    obj.optString("secuFeeField", "fee"),
+                    obj.optString("secuAmountField", "amount"),
+                    obj.optString("secuTickerField", "ticker"),
+                    obj.optString("secuCurrencyField", "currency"),
+                    obj.optString("secuEnrichmentLinkField", "enrichment_id"),
+                    obj.optString("customerDisplayNameField", "displayName"),
+                    obj.optString("customerIsFundField", "is_fund"),
+                    types, statuses,
+                    obj.optDouble("quantityTolerance", 0.000001),
+                    obj.optString("lotIdFormat", "LOT-??????"),
+                    obj.optString("lotIdEnvVar", "allocationLotCounter"),
+                    obj.optString("positionIdFormat", "PP-??????"),
+                    obj.optString("positionIdEnvVar", "portfolioPositionCounter"),
+                    obj.optString("portfolioIdFormat", "CPF-??????"),
+                    obj.optString("portfolioIdEnvVar", "customerPortfolioCounter")
+            );
+        }
+
+        static Set<String> parseStringSet(JSONArray arr, Set<String> defaults) {
+            if (arr == null || arr.length() == 0) return defaults;
+            Set<String> result = new HashSet<>();
+            for (int i = 0; i < arr.length(); i++) {
+                String s = arr.optString(i, "");
+                if (!s.isEmpty()) result.add(s);
+            }
+            return result;
+        }
+
+        public boolean isBuyType(String internalType) {
+            return internalType != null && internalType.endsWith("_BUY");
+        }
+
+        public boolean isSellType(String internalType) {
+            return internalType != null && internalType.endsWith("_SELL");
+        }
+
+        // Getters
+        public String getSecuTable() { return secuTable; }
+        public String getLotTable() { return lotTable; }
+        public String getPositionTable() { return positionTable; }
+        public String getPortfolioTable() { return portfolioTable; }
+        public String getCustomerTable() { return customerTable; }
+        public String getCostBasisTable() { return costBasisTable; }
+        public String getEnrichmentSourceField() { return enrichmentSourceField; }
+        public String getEnrichmentAssetField() { return enrichmentAssetField; }
+        public String getEnrichmentAssetIsinField() { return enrichmentAssetIsinField; }
+        public String getEnrichmentTypeField() { return enrichmentTypeField; }
+        public String getEnrichmentStatusField() { return enrichmentStatusField; }
+        public String getEnrichmentAllocStatusField() { return enrichmentAllocStatusField; }
+        public String getEnrichmentNotesField() { return enrichmentNotesField; }
+        public String getEnrichmentTrxDateField() { return enrichmentTrxDateField; }
+        public String getSecuQuantityField() { return secuQuantityField; }
+        public String getSecuPriceField() { return secuPriceField; }
+        public String getSecuFeeField() { return secuFeeField; }
+        public String getSecuAmountField() { return secuAmountField; }
+        public String getSecuTickerField() { return secuTickerField; }
+        public String getSecuCurrencyField() { return secuCurrencyField; }
+        public String getSecuEnrichmentLinkField() { return secuEnrichmentLinkField; }
+        public String getCustomerDisplayNameField() { return customerDisplayNameField; }
+        public String getCustomerIsFundField() { return customerIsFundField; }
+        public Set<String> getEligibleTypes() { return eligibleTypes; }
+        public Set<String> getEligibleStatuses() { return eligibleStatuses; }
+        public double getQuantityTolerance() { return quantityTolerance; }
+        public String getLotIdFormat() { return lotIdFormat; }
+        public String getLotIdEnvVar() { return lotIdEnvVar; }
+        public String getPositionIdFormat() { return positionIdFormat; }
+        public String getPositionIdEnvVar() { return positionIdEnvVar; }
+        public String getPortfolioIdFormat() { return portfolioIdFormat; }
+        public String getPortfolioIdEnvVar() { return portfolioIdEnvVar; }
+    }
+
+    public static class IncomeAllocationConfig {
+        private final String incomeAllocTable;
+        private final String incomeAllocIdFormat;
+        private final String incomeAllocIdEnvVar;
+        private final Set<String> eligibleTypes;
+        private final Set<String> eligibleStatuses;
+        private final String enrichmentTypeField;
+        private final String enrichmentStatusField;
+        private final String enrichmentAllocStatusField;
+        private final String enrichmentAssetField;
+        private final String enrichmentAmountField;
+        private final String enrichmentCurrencyField;
+        private final String enrichmentFxRateField;
+        private final String enrichmentTrxDateField;
+        private final String enrichmentNotesField;
+        private final String lotTable;
+        private final String lotAssetIdField;
+        private final String lotCustomerIdField;
+        private final String lotDirectionField;
+        private final String lotQuantityField;
+        private final String lotAllocationDateField;
+        private final String lotAssetTickerField;
+        private final String customerTable;
+        private final String customerDisplayNameField;
+
+        private IncomeAllocationConfig(
+                String incomeAllocTable, String incomeAllocIdFormat, String incomeAllocIdEnvVar,
+                Set<String> eligibleTypes, Set<String> eligibleStatuses,
+                String enrichmentTypeField, String enrichmentStatusField,
+                String enrichmentAllocStatusField, String enrichmentAssetField,
+                String enrichmentAmountField, String enrichmentCurrencyField,
+                String enrichmentFxRateField, String enrichmentTrxDateField,
+                String enrichmentNotesField,
+                String lotTable, String lotAssetIdField, String lotCustomerIdField,
+                String lotDirectionField, String lotQuantityField,
+                String lotAllocationDateField, String lotAssetTickerField,
+                String customerTable, String customerDisplayNameField) {
+            this.incomeAllocTable = incomeAllocTable;
+            this.incomeAllocIdFormat = incomeAllocIdFormat;
+            this.incomeAllocIdEnvVar = incomeAllocIdEnvVar;
+            this.eligibleTypes = Collections.unmodifiableSet(eligibleTypes);
+            this.eligibleStatuses = Collections.unmodifiableSet(eligibleStatuses);
+            this.enrichmentTypeField = enrichmentTypeField;
+            this.enrichmentStatusField = enrichmentStatusField;
+            this.enrichmentAllocStatusField = enrichmentAllocStatusField;
+            this.enrichmentAssetField = enrichmentAssetField;
+            this.enrichmentAmountField = enrichmentAmountField;
+            this.enrichmentCurrencyField = enrichmentCurrencyField;
+            this.enrichmentFxRateField = enrichmentFxRateField;
+            this.enrichmentTrxDateField = enrichmentTrxDateField;
+            this.enrichmentNotesField = enrichmentNotesField;
+            this.lotTable = lotTable;
+            this.lotAssetIdField = lotAssetIdField;
+            this.lotCustomerIdField = lotCustomerIdField;
+            this.lotDirectionField = lotDirectionField;
+            this.lotQuantityField = lotQuantityField;
+            this.lotAllocationDateField = lotAllocationDateField;
+            this.lotAssetTickerField = lotAssetTickerField;
+            this.customerTable = customerTable;
+            this.customerDisplayNameField = customerDisplayNameField;
+        }
+
+        public static IncomeAllocationConfig defaults() {
+            return new IncomeAllocationConfig(
+                    "incomeAllocation", "IA-??????", "incomeAllocCounter",
+                    new HashSet<>(Arrays.asList("DIV_INCOME", "DIV_TAX", "BOND_INT")),
+                    new HashSet<>(Arrays.asList("enriched", "in_review", "adjusted", "ready", "paired")),
+                    "internal_type", "status", "fund_allocation_status",
+                    "resolved_asset_id", "total_amount", "validated_currency",
+                    "fx_rate_to_eur", "transaction_date", "processing_notes",
+                    "allocationLot", "assetId", "customerId",
+                    "direction", "quantity", "allocationDate", "assetTicker",
+                    "customer", "displayName"
+            );
+        }
+
+        static IncomeAllocationConfig parse(JSONObject obj) {
+            Set<String> types = AllocationConfig.parseStringSet(obj.optJSONArray("eligibleTypes"),
+                    new HashSet<>(Arrays.asList("DIV_INCOME", "DIV_TAX", "BOND_INT")));
+            Set<String> statuses = AllocationConfig.parseStringSet(obj.optJSONArray("eligibleStatuses"),
+                    new HashSet<>(Arrays.asList("enriched", "in_review", "adjusted", "ready", "paired")));
+
+            return new IncomeAllocationConfig(
+                    obj.optString("incomeAllocTable", "incomeAllocation"),
+                    obj.optString("incomeAllocIdFormat", "IA-??????"),
+                    obj.optString("incomeAllocIdEnvVar", "incomeAllocCounter"),
+                    types, statuses,
+                    obj.optString("enrichmentTypeField", "internal_type"),
+                    obj.optString("enrichmentStatusField", "status"),
+                    obj.optString("enrichmentAllocStatusField", "fund_allocation_status"),
+                    obj.optString("enrichmentAssetField", "resolved_asset_id"),
+                    obj.optString("enrichmentAmountField", "total_amount"),
+                    obj.optString("enrichmentCurrencyField", "validated_currency"),
+                    obj.optString("enrichmentFxRateField", "fx_rate_to_eur"),
+                    obj.optString("enrichmentTrxDateField", "transaction_date"),
+                    obj.optString("enrichmentNotesField", "processing_notes"),
+                    obj.optString("lotTable", "allocationLot"),
+                    obj.optString("lotAssetIdField", "assetId"),
+                    obj.optString("lotCustomerIdField", "customerId"),
+                    obj.optString("lotDirectionField", "direction"),
+                    obj.optString("lotQuantityField", "quantity"),
+                    obj.optString("lotAllocationDateField", "allocationDate"),
+                    obj.optString("lotAssetTickerField", "assetTicker"),
+                    obj.optString("customerTable", "customer"),
+                    obj.optString("customerDisplayNameField", "displayName")
+            );
+        }
+
+        public String getIncomeAllocTable() { return incomeAllocTable; }
+        public String getIncomeAllocIdFormat() { return incomeAllocIdFormat; }
+        public String getIncomeAllocIdEnvVar() { return incomeAllocIdEnvVar; }
+        public Set<String> getEligibleTypes() { return eligibleTypes; }
+        public Set<String> getEligibleStatuses() { return eligibleStatuses; }
+        public String getEnrichmentTypeField() { return enrichmentTypeField; }
+        public String getEnrichmentStatusField() { return enrichmentStatusField; }
+        public String getEnrichmentAllocStatusField() { return enrichmentAllocStatusField; }
+        public String getEnrichmentAssetField() { return enrichmentAssetField; }
+        public String getEnrichmentAmountField() { return enrichmentAmountField; }
+        public String getEnrichmentCurrencyField() { return enrichmentCurrencyField; }
+        public String getEnrichmentFxRateField() { return enrichmentFxRateField; }
+        public String getEnrichmentTrxDateField() { return enrichmentTrxDateField; }
+        public String getEnrichmentNotesField() { return enrichmentNotesField; }
+        public String getLotTable() { return lotTable; }
+        public String getLotAssetIdField() { return lotAssetIdField; }
+        public String getLotCustomerIdField() { return lotCustomerIdField; }
+        public String getLotDirectionField() { return lotDirectionField; }
+        public String getLotQuantityField() { return lotQuantityField; }
+        public String getLotAllocationDateField() { return lotAllocationDateField; }
+        public String getLotAssetTickerField() { return lotAssetTickerField; }
+        public String getCustomerTable() { return customerTable; }
+        public String getCustomerDisplayNameField() { return customerDisplayNameField; }
     }
 }
