@@ -587,6 +587,89 @@ public class EnrichmentService {
         return result;
     }
 
+    // ── Maker-checker: checker approves confirmed records ──────────────────
+
+    /**
+     * Checker step of maker-checker (WS7 segregation of duties). The current user (the checker)
+     * approves every {@code confirmed} record that is awaiting approval and was confirmed by a
+     * DIFFERENT operator — stamping {@code approved_by} = current user and {@code approved_at} = now.
+     *
+     * <p>Segregation is enforced here at action time: a record the current user confirmed is
+     * skipped ({@code skippedOwn}), so a checker can only approve other people's work. Records
+     * already approved are skipped ({@code alreadyApproved}); confirmed records with no recorded
+     * maker are still approvable. The journalizer re-checks the same rule at the posting boundary
+     * (defence in depth). Status is left at {@code confirmed} — approval is an additional stamp,
+     * and the journalizer posts confirmed-and-approved records.
+     *
+     * @return summary {approved, skippedOwn, alreadyApproved, scanned, approver}
+     */
+    public Map<String, Object> approveConfirmedRecords(String tableName, ValidationConfig config)
+            throws SQLException {
+        ValidationConfig.ConfirmationConfig cc = config != null ? config.getConfirmation() : null;
+        String confirmedByField = cc != null ? cc.getConfirmedByField() : "confirmed_by";
+        String approvedByField  = cc != null ? cc.getApprovedByField()  : "approved_by";
+        String approvedAtField  = cc != null ? cc.getApprovedAtField()  : "approved_at";
+
+        String dbTable      = JdbcHelper.dbTable(tableName);
+        String statusCol    = JdbcHelper.dbCol("status");
+        String confirmedCol = JdbcHelper.dbCol(confirmedByField);
+        String approvedCol  = JdbcHelper.dbCol(approvedByField);
+
+        String checker = getCurrentUser();
+        String now = Instant.now().toString();
+
+        int approved = 0, skippedOwn = 0, alreadyApproved = 0, scanned = 0;
+
+        String sql = "SELECT id, " + confirmedCol + " AS conf, " + approvedCol + " AS appr "
+                + "FROM " + dbTable + " WHERE " + statusCol + " = 'confirmed'";
+
+        Connection conn = null;
+        try {
+            conn = JdbcHelper.getConnection();
+            conn.setAutoCommit(false);
+
+            List<String> toApprove = new ArrayList<>();
+            try (PreparedStatement ps = conn.prepareStatement(sql);
+                 ResultSet rs = ps.executeQuery()) {
+                while (rs.next()) {
+                    scanned++;
+                    String id = rs.getString("id");
+                    String conf = rs.getString("conf");
+                    String appr = rs.getString("appr");
+                    if (appr != null && !appr.trim().isEmpty()) { alreadyApproved++; continue; }
+                    if (conf != null && conf.trim().equalsIgnoreCase(checker)) { skippedOwn++; continue; }
+                    toApprove.add(id);
+                }
+            }
+
+            for (String id : toApprove) {
+                Map<String, String> updates = new HashMap<>();
+                updates.put(approvedByField, checker);
+                updates.put(approvedAtField, now);
+                JdbcHelper.updateColumns(conn, tableName, id, updates, checker);
+                JdbcHelper.insertAudit(conn, EntityType.ENRICHMENT, id,
+                        "confirmed", "confirmed", checker, "Approved for posting (maker-checker)");
+                approved++;
+            }
+
+            conn.commit();
+        } catch (Exception e) {
+            if (conn != null) { try { conn.rollback(); } catch (SQLException ignored) {} }
+            throw new SQLException("Approval failed: " + e.getMessage(), e);
+        } finally {
+            if (conn != null) { try { conn.setAutoCommit(true); } catch (SQLException ignored) {} }
+            JdbcHelper.closeQuietly(conn);
+        }
+
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("approved", approved);
+        result.put("skippedOwn", skippedOwn);
+        result.put("alreadyApproved", alreadyApproved);
+        result.put("scanned", scanned);
+        result.put("approver", checker);
+        return result;
+    }
+
     // ── Step 12: Split ─────────────────────────────────────────────────
 
     /**

@@ -58,6 +58,8 @@ public final class JdbcTestHelper {
                     + "c_processing_notes VARCHAR(2000), "
                     + "c_confirmed_by VARCHAR(255), "
                     + "c_confirmed_at VARCHAR(100), "
+                    + "c_approved_by VARCHAR(255), "
+                    + "c_approved_at VARCHAR(100), "
                     // WS-2 workspace operations fields
                     + "c_matched_rule_id VARCHAR(255), "
                     + "c_type_confidence VARCHAR(50), "
@@ -337,7 +339,9 @@ public final class JdbcTestHelper {
                 + "\"requiredFields\": [\"customer_code\", \"internal_type\", \"debit_credit\"],"
                 + "\"confirmation\": {"
                 + "  \"confirmedByField\": \"confirmed_by\","
-                + "  \"confirmedAtField\": \"confirmed_at\""
+                + "  \"confirmedAtField\": \"confirmed_at\","
+                + "  \"approvedByField\": \"approved_by\","
+                + "  \"approvedAtField\": \"approved_at\""
                 + "}"
                 + "}");
     }

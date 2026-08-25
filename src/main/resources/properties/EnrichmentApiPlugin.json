@@ -35,7 +35,11 @@
                 "name": "enableBatchOperations",
                 "label": "Enable Batch Operations",
                 "type": "checkbox",
-                "value": "",
+                "value": "true",
+                "options": [{
+                    "value": "true",
+                    "label": ""
+                }],
                 "description": "Enable split, merge, and confirm endpoints. Uncheck to disable these operations."
             },
             {

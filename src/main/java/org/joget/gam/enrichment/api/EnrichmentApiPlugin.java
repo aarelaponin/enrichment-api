@@ -1022,6 +1022,9 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
             if (peek.has("confirm") && peek.has("recordIds")) {
                 return handleConfirm(json);
             }
+            if (peek.has("approveConfirmed")) {
+                return handleApproveConfirmed(json);
+            }
             if (peek.has("targetStatus") && peek.has("recordIds")) {
                 return handleBatchAction(json);
             }
@@ -1527,6 +1530,29 @@ public class EnrichmentApiPlugin extends ApiPluginAbstract implements PropertyEd
         } catch (Exception e) {
             LogUtil.error(CLASS_NAME, e, "Error confirming records");
             return databaseError("Confirmation failed: " + e.getMessage(), t0);
+        }
+    }
+
+    // ── Approve confirmed (maker-checker checker step) ─────────────────────
+
+    /**
+     * Checker approves all confirmed records awaiting approval that were confirmed by someone
+     * else (segregation of duties). JSON: {approveConfirmed:true}. Stamps approved_by = current
+     * user. Records the current user confirmed are skipped (skippedOwn).
+     */
+    private ApiResponse handleApproveConfirmed(String json) {
+        long t0 = System.currentTimeMillis();
+        try {
+            if (!isBatchOperationsEnabled()) {
+                return configError("Batch operations are disabled. Enable 'enableBatchOperations' in plugin properties.", t0);
+            }
+            ValidationConfig config = getValidationConfig();
+            Map<String, Object> result = SERVICE.approveConfirmedRecords(getTableName(), config);
+            result.put("ms", System.currentTimeMillis() - t0);
+            return new ApiResponse(200, result);
+        } catch (Exception e) {
+            LogUtil.error(CLASS_NAME, e, "Error approving confirmed records");
+            return databaseError("Approval failed: " + e.getMessage(), t0);
         }
     }
 

@@ -491,21 +491,30 @@ public class ValidationConfig {
     public static class ConfirmationConfig {
         private final String confirmedByField;
         private final String confirmedAtField;
+        private final String approvedByField;
+        private final String approvedAtField;
 
-        private ConfirmationConfig(String confirmedByField, String confirmedAtField) {
+        private ConfirmationConfig(String confirmedByField, String confirmedAtField,
+                                   String approvedByField, String approvedAtField) {
             this.confirmedByField = confirmedByField;
             this.confirmedAtField = confirmedAtField;
+            this.approvedByField = approvedByField;
+            this.approvedAtField = approvedAtField;
         }
 
         static ConfirmationConfig parse(JSONObject obj) {
             return new ConfirmationConfig(
                     obj.optString("confirmedByField", "confirmed_by"),
-                    obj.optString("confirmedAtField", "confirmed_at")
+                    obj.optString("confirmedAtField", "confirmed_at"),
+                    obj.optString("approvedByField", "approved_by"),
+                    obj.optString("approvedAtField", "approved_at")
             );
         }
 
         public String getConfirmedByField() { return confirmedByField; }
         public String getConfirmedAtField() { return confirmedAtField; }
+        public String getApprovedByField() { return approvedByField; }
+        public String getApprovedAtField() { return approvedAtField; }
     }
 
     public static class AllocationConfig {
@@ -615,7 +624,7 @@ public class ValidationConfig {
                     "quantity", "price", "fee", "amount", "ticker", "currency", "enrichment_id",
                     "displayName", "is_fund",
                     new HashSet<>(Arrays.asList("EQ_BUY", "EQ_SELL", "BOND_BUY", "BOND_SELL", "SEC_BUY", "SEC_SELL")),
-                    new HashSet<>(Arrays.asList("enriched", "in_review", "adjusted", "ready", "paired")),
+                    new HashSet<>(Arrays.asList("enriched", "in_review", "adjusted", "ready", "paired", "confirmed")),
                     0.000001,
                     "LOT-??????", "allocationLotCounter",
                     "PP-??????", "portfolioPositionCounter",
@@ -627,7 +636,7 @@ public class ValidationConfig {
             Set<String> types = parseStringSet(obj.optJSONArray("eligibleTypes"),
                     new HashSet<>(Arrays.asList("EQ_BUY", "EQ_SELL", "BOND_BUY", "BOND_SELL", "SEC_BUY", "SEC_SELL")));
             Set<String> statuses = parseStringSet(obj.optJSONArray("eligibleStatuses"),
-                    new HashSet<>(Arrays.asList("enriched", "in_review", "adjusted", "ready", "paired")));
+                    new HashSet<>(Arrays.asList("enriched", "in_review", "adjusted", "ready", "paired", "confirmed")));
 
             return new AllocationConfig(
                     obj.optString("secuTable", "secu_total_trx"),
@@ -783,7 +792,7 @@ public class ValidationConfig {
             return new IncomeAllocationConfig(
                     "incomeAllocation", "IA-??????", "incomeAllocCounter",
                     new HashSet<>(Arrays.asList("DIV_INCOME", "DIV_TAX", "BOND_INT")),
-                    new HashSet<>(Arrays.asList("enriched", "in_review", "adjusted", "ready", "paired")),
+                    new HashSet<>(Arrays.asList("enriched", "in_review", "adjusted", "ready", "paired", "confirmed")),
                     "internal_type", "status", "fund_allocation_status",
                     "resolved_asset_id", "total_amount", "validated_currency",
                     "fx_rate_to_eur", "transaction_date", "processing_notes",
@@ -797,7 +806,7 @@ public class ValidationConfig {
             Set<String> types = AllocationConfig.parseStringSet(obj.optJSONArray("eligibleTypes"),
                     new HashSet<>(Arrays.asList("DIV_INCOME", "DIV_TAX", "BOND_INT")));
             Set<String> statuses = AllocationConfig.parseStringSet(obj.optJSONArray("eligibleStatuses"),
-                    new HashSet<>(Arrays.asList("enriched", "in_review", "adjusted", "ready", "paired")));
+                    new HashSet<>(Arrays.asList("enriched", "in_review", "adjusted", "ready", "paired", "confirmed")));
 
             return new IncomeAllocationConfig(
                     obj.optString("incomeAllocTable", "incomeAllocation"),

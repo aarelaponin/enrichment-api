@@ -55,7 +55,10 @@ public class AllocationConfigTest {
         assertTrue(ac.getEligibleStatuses().contains("adjusted"));
         assertTrue(ac.getEligibleStatuses().contains("ready"));
         assertTrue(ac.getEligibleStatuses().contains("paired"));
-        assertEquals(5, ac.getEligibleStatuses().size());
+        // 'confirmed' is intentionally allocatable so allocation is order-independent:
+        // confirming a trade must not silently remove it from allocation eligibility.
+        assertTrue(ac.getEligibleStatuses().contains("confirmed"));
+        assertEquals(6, ac.getEligibleStatuses().size());
     }
 
     @Test
